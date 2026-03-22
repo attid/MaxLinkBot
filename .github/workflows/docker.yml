@@ -17,6 +17,9 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Show workspace
+        run: ls -la && pwd && cat pyproject.toml | head -5
+
       - name: Install dependencies
         run: uv sync --frozen
 
