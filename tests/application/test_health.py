@@ -37,7 +37,7 @@ class TestHealthCheckService:
             )
         )
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return MagicMock()
 
         service = HealthCheckService(
@@ -70,7 +70,7 @@ class TestHealthCheckService:
         max_client.is_session_valid = AsyncMock(return_value=False)
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = HealthCheckService(
@@ -103,7 +103,7 @@ class TestHealthCheckService:
         max_client.is_session_valid = AsyncMock(return_value=False)
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = HealthCheckService(
@@ -137,7 +137,7 @@ class TestHealthCheckService:
         max_client.is_session_valid = AsyncMock(return_value=True)
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = HealthCheckService(

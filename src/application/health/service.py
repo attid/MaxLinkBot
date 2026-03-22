@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
 from src.application.auth.exceptions import AuthError
+from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
     AuditRepository,
     BindingRepository,
@@ -28,7 +30,7 @@ class HealthCheckService:
         binding_repo: BindingRepository,
         audit_repo: AuditRepository,
         telegram_client: TelegramClient,
-        max_client_factory: Any,  # (session_data: str) -> MaxClient
+        max_client_factory: Callable[[], MaxClient],
     ) -> None:
         self._binding_repo = binding_repo
         self._audit_repo = audit_repo
@@ -49,13 +51,13 @@ class HealthCheckService:
             return
 
         # Validate session
-        max_client = self._max_client_factory(binding.max_session_data)
+        max_client = self._max_client_factory()
         try:
-            is_valid = await max_client.is_session_valid()  # type: ignore[union-attr]
+            is_valid = await max_client.is_session_valid()
         except AuthError:
             is_valid = False
         finally:
-            await max_client.close()  # type: ignore[union-attr]
+            await max_client.close()
 
         if not is_valid:
             await self._binding_repo.update_status(telegram_user_id, BindingStatus.REAUTH_REQUIRED)

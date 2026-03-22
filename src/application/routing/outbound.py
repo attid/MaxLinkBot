@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from collections.abc import Callable
 
 from src.application.auth.exceptions import AuthError
+from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
     AuditRepository,
     BindingRepository,
@@ -25,7 +26,7 @@ class OutboundSyncService:
         topic_repo: TelegramTopicRepository,
         message_link_repo: MessageLinkRepository,
         audit_repo: AuditRepository,
-        max_client_factory: Any,  # (session_data: str) -> MaxClient
+        max_client_factory: Callable[[], MaxClient],
     ) -> None:
         self._binding_repo = binding_repo
         self._topic_repo = topic_repo
@@ -56,7 +57,7 @@ class OutboundSyncService:
         if topic is None:
             raise AuthError("No topic mapping")
 
-        max_client = self._max_client_factory(binding.max_session_data)
+        max_client = self._max_client_factory()
         try:
             max_msg_id = await max_client.send_message(topic.max_chat_id, text)
         except AuthError:

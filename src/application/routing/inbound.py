@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 from src.application.auth.exceptions import AuthError
+from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
     AuditRepository,
     BindingRepository,
@@ -31,7 +33,7 @@ class InboundSyncService:
         cursor_repo: SyncCursorRepository,
         audit_repo: AuditRepository,
         telegram_client: TelegramClient,
-        max_client_factory: Any,  # (session_data: str) -> MaxClient
+        max_client_factory: Callable[[], MaxClient],
     ) -> None:
         self._binding_repo = binding_repo
         self._max_chat_repo = max_chat_repo
@@ -48,7 +50,7 @@ class InboundSyncService:
         if binding is None:
             return
 
-        max_client = self._max_client_factory(binding.max_session_data)
+        max_client = self._max_client_factory()
         try:
             await max_client.list_personal_chats()
         except AuthError:
@@ -72,7 +74,7 @@ class InboundSyncService:
         if binding is None:
             return
 
-        max_client = self._max_client_factory(binding.max_session_data)
+        max_client = self._max_client_factory()
         try:
             messages = await max_client.get_messages(
                 max_chat_id, since_message_id=since_id, limit=50

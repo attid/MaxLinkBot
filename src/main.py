@@ -38,7 +38,8 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str
     allowed_telegram_user_ids: str
-    max_base_url: str
+    max_phone: str
+    max_work_dir: str
     database_url: str
     poll_interval_seconds: int = 30
     backfill_message_count: int = 5
@@ -73,7 +74,7 @@ async def main() -> None:
     audit_repo = SqliteAuditRepository(db)
 
     # MAX client factory
-    max_factory = max_client_factory(settings.max_base_url)
+    max_factory = max_client_factory(settings.max_phone, settings.max_work_dir)
 
     # Telegram client + bot
     bot = Bot(token=settings.telegram_bot_token)

@@ -38,7 +38,7 @@ class TestOutboundSyncService:
         max_client = MagicMock()
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = OutboundSyncService(
@@ -65,7 +65,7 @@ class TestOutboundSyncService:
         max_client = MagicMock()
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = OutboundSyncService(
@@ -99,7 +99,7 @@ class TestOutboundSyncService:
         max_client.send_message = AsyncMock(return_value="max_msg_xyz")
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = OutboundSyncService(
@@ -138,7 +138,7 @@ class TestOutboundSyncService:
         max_client.send_message = AsyncMock(side_effect=Exception("Network error"))
         max_client.close = AsyncMock()
 
-        def factory(_session_data: str) -> MagicMock:
+        def factory() -> MagicMock:
             return max_client
 
         service = OutboundSyncService(
