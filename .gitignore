@@ -33,6 +33,7 @@ pip-wheel-metadata/
 *.db
 *.sqlite
 *.sqlite3
+data/
 
 # IDEs and OS files
 .idea/

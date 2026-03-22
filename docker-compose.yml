@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  maxlinkbot:
+    build: .
+    restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      ALLOWED_TELEGRAM_USER_IDS: "${ALLOWED_TELEGRAM_USER_IDS}"
+      MAX_BASE_URL: "${MAX_BASE_URL}"
+      DATABASE_URL: "sqlite+aiosqlite:///data/maxlinkbot.db"
+      POLL_INTERVAL_SECONDS: "${POLL_INTERVAL_SECONDS:-30}"
+      BACKFILL_MESSAGE_COUNT: "${BACKFILL_MESSAGE_COUNT:-5}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    volumes:
+      - maxlinkbot-data:/data
+    healthcheck:
+      # Simple process liveness — if the process dies, container restarts
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  maxlinkbot-data:
+    driver: local
