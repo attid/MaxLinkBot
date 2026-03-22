@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.application.auth.authorization import AllowlistGate, AuthorizationFlowService
+from src.application.auth.authorization import (
+    AllowlistGate,
+    AuthorizationFlowService,
+    AuthStartResult,
+)
 from src.application.auth.exceptions import AuthError
 from src.domain.bindings.models import Binding, BindingStatus
 
@@ -36,7 +40,7 @@ class TestAllowlistGate:
 def make_auth_service(binding_repo: MagicMock, audit_repo: MagicMock) -> AuthorizationFlowService:
     """Factory that creates an AuthorizationFlowService with a working mock client."""
 
-    def factory(_uid: int, _phone: str) -> MagicMock:
+    def factory(_uid: int, _phone: str | None) -> MagicMock:
         client = MagicMock()
         client.authenticate = AsyncMock(return_value="+79112223344")
         client.is_session_valid = AsyncMock(return_value=True)
@@ -52,6 +56,36 @@ def make_auth_service(binding_repo: MagicMock, audit_repo: MagicMock) -> Authori
 
 
 class TestAuthorizationFlowService:
+    async def test_begin_qr_auth_uses_existing_session_without_qr(self) -> None:
+        binding_repo = MagicMock()
+        binding_repo.save = AsyncMock()
+        audit_repo = MagicMock()
+        audit_repo.log = AsyncMock()
+
+        existing_client = MagicMock()
+        existing_client.start_for_qr = AsyncMock(return_value=b"")
+        existing_client.is_session_valid = AsyncMock(return_value=True)
+        existing_client.close = AsyncMock()
+
+        def existing_session_factory(_uid: int, _phone: str | None) -> MagicMock:
+            return existing_client
+
+        service = AuthorizationFlowService(
+            binding_repo=binding_repo,
+            audit_repo=audit_repo,
+            max_client_factory=existing_session_factory,
+            work_dir="/tmp/max",
+        )
+
+        result = await service.begin_qr_auth(telegram_user_id=123)
+
+        assert result == AuthStartResult(
+            client=existing_client,
+            qr_bytes=None,
+            session_restored=True,
+        )
+        existing_client.close.assert_not_called()
+
     async def test_start_auth_creates_binding(self) -> None:
         binding_repo = MagicMock()
         binding_repo.get = AsyncMock(return_value=None)
@@ -76,7 +110,7 @@ class TestAuthorizationFlowService:
         audit_repo = MagicMock()
         audit_repo.log = AsyncMock()
 
-        def failing_factory(_uid: int, _phone: str) -> MagicMock:
+        def failing_factory(_uid: int, _phone: str | None) -> MagicMock:
             client = MagicMock()
             client.authenticate = AsyncMock(side_effect=AuthError("Invalid"))
             client.close = AsyncMock()

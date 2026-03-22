@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from src.application.auth.exceptions import AuthError
 from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import AuditRepository, BindingRepository
 from src.domain.bindings.models import Binding, BindingStatus
 from src.domain.sync.models import AuditEventType
+
+
+@dataclass(frozen=True)
+class AuthStartResult:
+    client: MaxClient
+    qr_bytes: bytes | None
+    session_restored: bool
 
 
 class AllowlistGate:
@@ -37,7 +45,7 @@ class AuthorizationFlowService:
         self,
         binding_repo: BindingRepository,
         audit_repo: AuditRepository,
-        max_client_factory: Callable[[int, str], MaxClient],
+        max_client_factory: Callable[[int, str | None], MaxClient],
         work_dir: str,
     ) -> None:
         self._binding_repo = binding_repo
@@ -45,12 +53,61 @@ class AuthorizationFlowService:
         self._max_client_factory = max_client_factory
         self._work_dir = work_dir
 
-    async def start_auth(self, telegram_user_id: int, phone: str) -> Binding:
-        """Request SMS code and save binding with phone.
+    async def begin_qr_auth(self, telegram_user_id: int) -> AuthStartResult:
+        """Start QR auth: connect to MAX, generate QR image, return client and bytes.
 
-        Raises:
-            AuthError: if pymax fails to request the code.
+        The QR bytes are available immediately (within ~5s). The client's WebSocket
+        stays open and waits for the scan — caller sends the QR photo to Telegram
+        and then calls complete_qr_auth().
         """
+        client = self._max_client_factory(telegram_user_id, None)
+        try:
+            qr_result = await client.start_for_qr()  # type: ignore[attr-defined]
+        except Exception:
+            await client.close()
+            raise
+        qr_payload = qr_result if isinstance(qr_result, bytes) and qr_result else None
+        if qr_payload is None:
+            if await client.is_session_valid():
+                return AuthStartResult(
+                    client=client,
+                    qr_bytes=None,
+                    session_restored=True,
+                )
+            await client.close()
+            raise AuthError("Failed to generate QR code")
+        return AuthStartResult(
+            client=client,
+            qr_bytes=qr_payload,
+            session_restored=False,
+        )
+
+    async def complete_qr_auth(self, client: MaxClient, telegram_user_id: int) -> Binding:
+        """Save binding after QR scan.
+
+        The QR scan completed and token is saved in pymax's session DB.
+        Client stays connected for inbound polling (do NOT close it here).
+        """
+
+        now = int(time.time())
+        binding = Binding(
+            telegram_user_id=telegram_user_id,
+            max_session_data="qr_auth",
+            status=BindingStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+        )
+        await self._binding_repo.save(binding)
+        await self._audit_repo.log(
+            telegram_user_id,
+            AuditEventType.BINDING_CREATED,
+            f"Binding created via QR for user {telegram_user_id}",
+        )
+        return binding
+
+    async def start_auth(self, telegram_user_id: int, phone: str) -> Binding:
+        """Request SMS code and save binding with phone. Deprecated: use QR auth."""
+
         client = self._max_client_factory(telegram_user_id, phone)
         try:
             await client.authenticate({"phone": phone})
@@ -81,11 +138,8 @@ class AuthorizationFlowService:
         return binding
 
     async def complete_login(self, telegram_user_id: int, code: str) -> None:
-        """Complete login with the SMS code.
+        """Complete login with the SMS code. Deprecated: use QR auth."""
 
-        Raises:
-            AuthError: if the code is invalid or expired.
-        """
         binding = await self._binding_repo.get(telegram_user_id)
         if binding is None:
             raise AuthError("No binding found for user")
