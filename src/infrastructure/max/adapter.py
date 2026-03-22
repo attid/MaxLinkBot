@@ -11,7 +11,9 @@ import asyncio
 import io
 import logging
 import os
+import sqlite3
 import time
+from pathlib import Path
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -21,6 +23,7 @@ import qrcode
 from pymax import MaxClient
 from pymax.payloads import UserAgentPayload
 
+from src.application.auth.exceptions import AuthError
 from src.application.ports.clients import MaxClient as MaxClientPort
 
 logger = logging.getLogger(__name__)
@@ -45,8 +48,9 @@ class PymaxAdapter(MaxClientPort):
 
     USER_CACHE_TTL_SECONDS = 60 * 60 * 24
 
-    def __init__(self, client: MaxClient) -> None:
+    def __init__(self, client: MaxClient, session_db_path: Path | None = None) -> None:
         self._client = client
+        self._session_db_path = session_db_path
         self._buffer: list[PymaxMessage] = []
         self._lock = asyncio.Lock()
         self._started = False
@@ -352,6 +356,7 @@ class PymaxAdapter(MaxClientPort):
         """Start the client in background and wait until pymax signals readiness."""
         if self._started:
             return
+        self._assert_persisted_session_ready()
         if not self._registered:
             self._client.add_message_handler(self._on_message)
             self._registered = True
@@ -422,6 +427,29 @@ class PymaxAdapter(MaxClientPort):
             return "text"
         return normalized or "unknown"
 
+    def _assert_persisted_session_ready(self) -> None:
+        if self._session_db_path is None:
+            return
+        if not self._session_db_path.exists():
+            raise AuthError(
+                f"Persisted MAX session not found at {self._session_db_path}"
+            )
+
+        try:
+            with sqlite3.connect(self._session_db_path) as conn:
+                row = conn.execute(
+                    "SELECT token FROM auth WHERE COALESCE(token, '') != '' LIMIT 1"
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise AuthError(
+                f"Persisted MAX session is unreadable at {self._session_db_path}: {exc}"
+            ) from exc
+
+        if row is None:
+            raise AuthError(
+                f"Persisted MAX session is not authorized at {self._session_db_path}"
+            )
+
 
 def max_client_factory(
     work_dir: str,
@@ -435,6 +463,7 @@ def max_client_factory(
 
     def create(telegram_user_id: int, phone: str | None = None) -> MaxClientPort:
         user_dir = os.path.join(work_dir, str(telegram_user_id))
+        session_db_path = Path(user_dir) / "session.db"
         headers = UserAgentPayload(device_type="WEB", app_version="25.12.13")
         # For QR auth, the client requires a valid-format phone (regex: ^\+?\d{10,15}$).
         # Use a placeholder — the phone is not used during QR login.
@@ -445,6 +474,6 @@ def max_client_factory(
             headers=headers,
             reconnect=reconnect,
         )
-        return PymaxAdapter(client)
+        return PymaxAdapter(client, session_db_path=session_db_path)
 
     return create

@@ -41,6 +41,8 @@
    - background poller reuses inbound service/client and does not hit history on every tick.
 9. [ ] Обновить docs/контракт `pymax`, если новая модель подтвердит дополнительные инварианты.
 10. [ ] Прогнать релевантный pytest suite и ручную проверку в Docker.
+11. [ ] Защитить startup/runtime от удалённой on-disk MAX session:
+    background `start()` должен падать контролируемым `AuthError`, а не уходить в QR login flow.
 
 ## Риски и открытые вопросы
 
@@ -48,6 +50,7 @@
 - Нельзя потерять buffered messages при stop/restart между моментом получения и моментом доставки.
 - Нужно аккуратно закрывать долгоживущие MAX clients при shutdown и при переходе binding в `reauth_required`.
 - Редкий `reconcile` как discovery-механизм означает, что новый MAX chat может появиться в Telegram не мгновенно, а с задержкой до catch-up интервала; это допустимый компромисс ради снижения нагрузки.
+- Удаление `MAX_WORK_DIR/{telegram_user_id}/session.db` при `ACTIVE binding` не должно запускать QR flow в background-путях; нужен явный stale-session guard.
 
 ## Верификация
 

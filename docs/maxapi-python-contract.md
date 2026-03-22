@@ -15,6 +15,8 @@ Python import path: `from pymax import MaxClient`
 - Authentication is WebSocket-based.
 - The current integration uses QR/session-based auth with `device_type="WEB"`.
 - Session data is persisted on disk in per-user directories under `MAX_WORK_DIR/{telegram_user_id}/`.
+- The persisted restore artifact currently expected by the repository is `MAX_WORK_DIR/{telegram_user_id}/session.db`.
+- A merely existing `session.db` is not enough for restore: the repository currently treats the session as reusable only when table `auth` contains at least one non-empty `token`.
 - The runtime keeps one logical MAX session per Telegram user binding.
 - The project wraps the external client behind its own adapter in `src/infrastructure/max/adapter.py`.
 - `MaxClient.fetch_chats()` may return `ChatType.DIALOG` chats with `title=None`; for those chats the usable identity comes from `participants` and `owner`.
@@ -24,6 +26,7 @@ Python import path: `from pymax import MaxClient`
 - `MaxClient` supports live inbound handling through message handlers; in this repository the adapter buffers handler events and the application drains them as the primary `MAX -> Telegram` transport.
 - `fetch_history()` remains a fallback catch-up path and should not be used as a high-frequency steady-state polling mechanism for every chat.
 - Human-readable titles for MAX dialogs can be resolved as "the participant whose ID differs from chat.owner".
+- Background/runtime `start()` paths in this repository are restore-only: if `session.db` is missing or `auth.token` is empty, the adapter raises `AuthError` instead of starting a fresh QR login flow in the background.
 
 ## Known Unknowns
 

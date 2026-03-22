@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+from src.application.auth.exceptions import AuthError
 from src.application.health.service import BackgroundPoller, HealthCheckService
 from src.application.ports.repositories import AuditRepository, BindingRepository
 from src.application.ports.telegram_client import TelegramClient
@@ -151,6 +152,38 @@ class TestHealthCheckService:
 
         repos.binding_repo.update_status.assert_not_called()
         repos.telegram.send_text.assert_not_called()
+
+    async def test_check_and_notify_missing_persisted_session_sends_notification(self) -> None:
+        repos = MockHealthRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=Binding(
+                telegram_user_id=123,
+                max_session_data="session",
+                status=BindingStatus.ACTIVE,
+                created_at=0,
+                updated_at=0,
+            )
+        )
+        repos.audit_repo.has_recent_event = AsyncMock(return_value=False)
+
+        max_client = MagicMock(start=AsyncMock(side_effect=AuthError("Persisted MAX session not found")))
+        max_client.close = AsyncMock()
+
+        def factory(_uid: int, _phone: str) -> MagicMock:
+            return max_client
+
+        service = HealthCheckService(
+            binding_repo=repos.binding_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=factory,
+        )
+
+        await service.check_and_notify(123)
+
+        repos.binding_repo.update_status.assert_called_once_with(123, BindingStatus.REAUTH_REQUIRED)
+        repos.audit_repo.log.assert_called_once()
+        repos.telegram.send_text.assert_called_once()
 
 
 class TestBackgroundPoller:

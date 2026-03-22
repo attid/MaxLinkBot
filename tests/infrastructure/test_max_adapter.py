@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.application.auth.exceptions import AuthError
 from src.infrastructure.max.adapter import PymaxAdapter
 
 
@@ -229,3 +230,44 @@ async def test_consume_reconnect_event_returns_true_after_second_on_start() -> N
     assert await adapter.consume_reconnect_event() is False
 
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_start_raises_auth_error_when_session_db_missing(tmp_path) -> None:
+    client = MagicMock()
+    client.add_message_handler = MagicMock()
+    client.add_on_start_handler = MagicMock()
+    client.start = AsyncMock()
+
+    adapter = PymaxAdapter(client, session_db_path=tmp_path / "session.db")
+
+    with pytest.raises(AuthError, match="Persisted MAX session not found"):
+        await adapter.start()
+
+    client.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_raises_auth_error_when_session_db_has_empty_token(tmp_path) -> None:
+    session_db_path = tmp_path / "session.db"
+    import sqlite3
+
+    with sqlite3.connect(session_db_path) as conn:
+        conn.execute("CREATE TABLE auth (token VARCHAR, device_id CHAR(32) NOT NULL, PRIMARY KEY (device_id))")
+        conn.execute(
+            "INSERT INTO auth(token, device_id) VALUES (?, ?)",
+            ("", "device-1"),
+        )
+        conn.commit()
+
+    client = MagicMock()
+    client.add_message_handler = MagicMock()
+    client.add_on_start_handler = MagicMock()
+    client.start = AsyncMock()
+
+    adapter = PymaxAdapter(client, session_db_path=session_db_path)
+
+    with pytest.raises(AuthError, match="Persisted MAX session is not authorized"):
+        await adapter.start()
+
+    client.start.assert_not_awaited()
