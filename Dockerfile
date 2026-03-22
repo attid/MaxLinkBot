@@ -15,4 +15,4 @@ ENV PYTHONPATH="/app"
 
 VOLUME ["/data"]
 
-ENTRYPOINT ["uv", "run", "python", "-m", "src.main"]
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "src.main"]
