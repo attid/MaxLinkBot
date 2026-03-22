@@ -7,6 +7,7 @@ import logging
 import os
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.application.auth.authorization import AllowlistGate, AuthorizationFlowService
@@ -48,6 +49,21 @@ class Settings(BaseSettings):
         return {int(x.strip()) for x in self.allowed_telegram_user_ids.split(",") if x.strip()}
 
 
+async def configure_bot_commands(bot: Bot) -> None:
+    await bot.set_my_commands(
+        [
+            BotCommand(
+                command="start",
+                description="Sync chats and create missing topics",
+            ),
+            BotCommand(
+                command="resync",
+                description="Rebuild all topics from MAX chats",
+            ),
+        ]
+    )
+
+
 async def main() -> None:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -76,6 +92,7 @@ async def main() -> None:
 
     # Telegram client + bot
     bot = Bot(token=settings.telegram_bot_token)
+    await configure_bot_commands(bot)
     tg_client = AiogramTelegramAdapter(bot)
 
     # Services

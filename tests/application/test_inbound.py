@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, UTC
 from unittest.mock import AsyncMock, MagicMock
 
 from src.application.ports.repositories import (
@@ -64,6 +65,60 @@ class TestInboundSyncService:
 
         repos.binding_repo.get.assert_called_once_with(123)
         max_client.list_personal_chats.assert_not_called()
+
+    async def test_poll_user_polls_each_max_chat(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            side_effect=[
+                MagicMock(telegram_topic_id=50),
+                MagicMock(telegram_topic_id=60),
+            ]
+        )
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(side_effect=[100, 101])
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(
+            return_value=[
+                {"max_chat_id": "chat1", "title": "Alice"},
+                {"max_chat_id": "chat2", "title": "Bob"},
+            ]
+        )
+        max_client.get_messages = AsyncMock(
+            side_effect=[
+                [{"max_message_id": "1", "type": "text", "text": "Hello"}],
+                [{"max_message_id": "2", "type": "text", "text": "World"}],
+            ]
+        )
+        max_client.close = AsyncMock()
+
+        def factory(_uid: int, _phone: str) -> MagicMock:
+            return max_client
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=factory,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        max_client.start.assert_awaited_once()
+        assert max_client.get_messages.await_count == 2
+        max_client.get_messages.assert_any_await("chat1", since_message_id=None, limit=50)
+        max_client.get_messages.assert_any_await("chat2", since_message_id=None, limit=50)
+        max_client.close.assert_awaited_once()
 
     async def test_poll_chat_no_topic_mapping(self) -> None:
         """No topic for user+chat → nothing to do."""
@@ -215,7 +270,7 @@ class TestInboundSyncService:
         repos.audit_repo.log.assert_called_once()
 
     async def test_render_message_text(self) -> None:
-        """Text messages are rendered as-is."""
+        """Text messages are rendered with sender and timestamp prefix."""
         repos = MockRepos()
         service = InboundSyncService(
             binding_repo=repos.binding_repo,
@@ -229,7 +284,15 @@ class TestInboundSyncService:
         )
 
         # pyright: ignore — testing private method directly
-        assert service._render_message({"type": "text", "text": "Hello!"}) == "Hello!"  # type: ignore[reportPrivateUsage]
+        rendered = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "type": "text",
+                "text": "Hello!",
+                "sender_name": "Vasya",
+                "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert rendered == "[Vasya 22.03.26 14:35]\nHello!"
 
     async def test_render_message_unsupported_fallback(self) -> None:
         """Unsupported message types render with type and description."""
@@ -245,8 +308,15 @@ class TestInboundSyncService:
             max_client_factory=lambda _u, _p: MagicMock(),
         )
 
-        result = service._render_message({"type": "image", "description": "Sunset photo"})  # type: ignore[reportPrivateUsage]
-        assert result == "[image]: Sunset photo"
+        result = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "type": "image",
+                "description": "Sunset photo",
+                "sender_name": "Vasya",
+                "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert result == "[Vasya 22.03.26 14:35]\n[image]: Sunset photo"
 
     async def test_render_message_unknown_type(self) -> None:
         """Unknown type without description uses default fallback."""
@@ -262,5 +332,10 @@ class TestInboundSyncService:
             max_client_factory=lambda _u, _p: MagicMock(),
         )
 
-        result = service._render_message({})  # type: ignore[reportPrivateUsage]
-        assert result == "[unknown]: Unsupported content"
+        result = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "sender_name": "Unknown",
+                "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert result == "[Unknown 22.03.26 14:35]\n[unknown]: Unsupported content"

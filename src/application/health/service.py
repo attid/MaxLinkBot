@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -17,6 +18,8 @@ from src.application.ports.repositories import (
 from src.application.ports.telegram_client import TelegramClient
 from src.domain.bindings.models import BindingStatus
 from src.domain.sync.models import AuditEventType
+
+logger = logging.getLogger(__name__)
 
 
 class HealthCheckService:
@@ -118,5 +121,12 @@ class BackgroundPoller:
             return
 
         inbound = self._inbound_factory(telegram_user_id)
-        with suppress(AuthError):
+        try:
             await inbound.poll_user(telegram_user_id)
+        except AuthError:
+            return
+        except Exception:
+            logger.exception(
+                "background inbound poll failed telegram_user_id=%s",
+                telegram_user_id,
+            )

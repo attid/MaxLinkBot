@@ -34,6 +34,11 @@ class TelegramClient(ABC):
         ...
 
     @abstractmethod
+    async def topic_exists(self, chat_id: int, topic_id: int) -> bool:
+        """Check whether a topic is still writable."""
+        ...
+
+    @abstractmethod
     async def delete_topic(self, chat_id: int, topic_id: int) -> None:
         """Delete a topic from a chat."""
         ...

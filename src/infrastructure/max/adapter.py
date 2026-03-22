@@ -11,6 +11,7 @@ import asyncio
 import io
 import logging
 import os
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ class PymaxMessage:
 class PymaxAdapter(MaxClientPort):
     """Adapter wrapping a live MAX WebSocket client."""
 
+    USER_CACHE_TTL_SECONDS = 60 * 60 * 24
+
     def __init__(self, client: MaxClient) -> None:
         self._client = client
         self._buffer: list[PymaxMessage] = []
@@ -48,6 +51,8 @@ class PymaxAdapter(MaxClientPort):
         self._registered = False
         self._qr_bytes: bytes | None = None
         self._client_task: asyncio.Task[None] | None = None
+        self._ready_event = asyncio.Event()
+        self._user_cache: dict[int, tuple[float, str]] = {}
 
     async def authenticate(self, credentials: dict[str, str]) -> str:
         """No-op: QR auth is handled via start()."""
@@ -58,7 +63,25 @@ class PymaxAdapter(MaxClientPort):
 
     async def list_personal_chats(self) -> list[dict[str, Any]]:
         raw = await self._client.fetch_chats()  # type: ignore[reportUnknownMemberType]
-        return [{"max_chat_id": str(c.id), "title": getattr(c, "name", None) or ""} for c in raw]
+        chats = []
+        for chat in raw:
+            title = await self._resolve_chat_title(chat)
+            logger.info(
+                "max resolved chat title chat_id=%s chat_type=%r raw_title=%r owner=%r participants=%r resolved_title=%r",
+                getattr(chat, "id", None),
+                getattr(chat, "type", None),
+                getattr(chat, "title", None),
+                getattr(chat, "owner", None),
+                list((getattr(chat, "participants", {}) or {}).keys()),
+                title,
+            )
+            chats.append({"max_chat_id": str(chat.id), "title": title})
+        logger.info(
+            "max list_personal_chats fetched count=%s ids=%s",
+            len(chats),
+            [chat["max_chat_id"] for chat in chats],
+        )
+        return chats
 
     async def get_messages(
         self, max_chat_id: str, since_message_id: str | None, limit: int
@@ -67,6 +90,12 @@ class PymaxAdapter(MaxClientPort):
         since = int(since_message_id) if since_message_id else None
         raw = await self._client.fetch_history(chat_id, backward=limit)  # type: ignore[reportUnknownMemberType]
         if raw is None:
+            logger.info(
+                "max get_messages no history max_chat_id=%s since_message_id=%s limit=%s",
+                max_chat_id,
+                since_message_id,
+                limit,
+            )
             return []
         result: list[dict[str, Any]] = []
         for m in raw:
@@ -75,15 +104,130 @@ class PymaxAdapter(MaxClientPort):
                 break
             result.append(
                 {
-                    "message_id": str(m.id),
+                    "max_message_id": str(m.id),
                     "chat_id": max_chat_id,
                     "text": getattr(m, "text", None) or "",
                     "sender_id": getattr(m, "sender_id", None) or 0,
-                    "sender": getattr(m, "sender", None) or "",
+                    "sender_name": await self._resolve_sender_name(m),
                     "time": getattr(m, "time", None) or 0,
                 }
             )
+        logger.info(
+            "max get_messages fetched max_chat_id=%s since_message_id=%s limit=%s count=%s",
+            max_chat_id,
+            since_message_id,
+            limit,
+            len(result),
+        )
         return result
+
+    async def _resolve_chat_title(self, chat: Any) -> str:
+        title = self._normalize_text_field(getattr(chat, "title", None))
+        if title:
+            return title
+
+        title = self._normalize_text_field(getattr(chat, "name", None))
+        if title:
+            return title
+
+        if not self._is_dialog_chat(chat):
+            return ""
+
+        owner = getattr(chat, "owner", None)
+        participants = getattr(chat, "participants", {}) or {}
+        participant_ids = [int(uid) for uid in participants.keys()]
+        other_participant_id = next((uid for uid in participant_ids if uid != owner), None)
+        if other_participant_id is None:
+            logger.info(
+                "max resolve chat title no other participant chat_id=%s owner=%r participants=%r",
+                getattr(chat, "id", None),
+                owner,
+                participant_ids,
+            )
+            return ""
+
+        display_name = await self._resolve_user_display_name(other_participant_id)
+        logger.info(
+            "max resolve chat title dialog chat_id=%s other_participant_id=%s display_name=%r",
+            getattr(chat, "id", None),
+            other_participant_id,
+            display_name,
+        )
+        return display_name or ""
+
+    async def _resolve_sender_name(self, message: Any) -> str:
+        sender = getattr(message, "sender", None)
+        if isinstance(sender, str):
+            return sender
+
+        sender_id = sender
+        if sender_id is None:
+            sender_id = getattr(message, "sender_id", None)
+        if sender_id is None:
+            return ""
+
+        display_name = await self._resolve_user_display_name(int(sender_id))
+        if display_name:
+            return display_name
+
+        return str(sender_id)
+
+    async def _resolve_user_display_name(self, user_id: int) -> str | None:
+        cached = self._user_cache.get(user_id)
+        now = time.time()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+        user = None
+        with suppress(Exception):
+            user = self._client.get_cached_user(user_id)  # type: ignore[reportUnknownMemberType]
+
+        if user is None:
+            with suppress(Exception):
+                users = await self._client.fetch_users([user_id])  # type: ignore[reportUnknownMemberType]
+                user = users[0] if users else None
+
+        display_name = self._extract_user_display_name(user)
+        if display_name:
+            self._user_cache[user_id] = (now + self.USER_CACHE_TTL_SECONDS, display_name)
+            logger.info("max user display name resolved user_id=%s display_name=%r", user_id, display_name)
+        else:
+            logger.info("max user display name missing user_id=%s", user_id)
+        return display_name
+
+    def _extract_user_display_name(self, user: Any) -> str | None:
+        if user is None:
+            return None
+
+        for name in getattr(user, "names", []) or []:
+            display_name = self._normalize_text_field(getattr(name, "name", None))
+            if display_name:
+                return display_name
+
+            first_name = getattr(name, "first_name", None) or ""
+            last_name = getattr(name, "last_name", None) or ""
+            combined = f"{first_name} {last_name}".strip()
+            if combined:
+                return combined
+
+        return None
+
+    def _normalize_text_field(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+
+    def _is_dialog_chat(self, chat: Any) -> bool:
+        chat_type = getattr(chat, "type", None)
+        if isinstance(chat_type, str):
+            return chat_type.upper() == "DIALOG"
+        name = getattr(chat_type, "name", None)
+        if isinstance(name, str):
+            return name.upper() == "DIALOG"
+        value = getattr(chat_type, "value", None)
+        if isinstance(value, str):
+            return value.upper() == "DIALOG"
+        return str(chat_type).upper().endswith("DIALOG")
 
     async def send_message(self, max_chat_id: str, text: str) -> str:
         msg = await self._client.send_message(text=text, chat_id=int(max_chat_id))
@@ -109,6 +253,7 @@ class PymaxAdapter(MaxClientPort):
             with suppress(Exception):
                 await self._client.close()
             self._started = False
+        self._ready_event = asyncio.Event()
 
     async def start_for_qr(self) -> bytes:
         """Start the client in a background task and return QR bytes immediately.
@@ -159,13 +304,26 @@ class PymaxAdapter(MaxClientPort):
         return self._qr_bytes or b""
 
     async def start(self) -> None:
-        """Start the client: connect, authenticate, and keep the WebSocket alive."""
+        """Start the client in background and wait until pymax signals readiness."""
         if self._started:
             return
         if not self._registered:
             self._client.add_message_handler(self._on_message)
             self._registered = True
-        await self._client.start()
+
+        async def mark_ready() -> None:
+            logger.info("max start on_start fired")
+            self._ready_event.set()
+
+        self._client.add_on_start_handler(mark_ready)
+
+        if self._client_task is None or self._client_task.done():
+            logger.info("max start launching background client task")
+            self._client_task = asyncio.create_task(self._client.start())
+
+        logger.info("max start waiting for on_start readiness")
+        await self._ready_event.wait()
+        logger.info("max start ready")
         self._started = True
 
     def _on_message(self, msg: Any) -> None:

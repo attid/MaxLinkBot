@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from collections.abc import Callable
 from typing import Any
 
@@ -53,7 +54,11 @@ class InboundSyncService:
         max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
             await max_client.start()  # type: ignore[attr-defined]
-            await max_client.list_personal_chats()
+            chats = await max_client.list_personal_chats()
+            for chat in chats:
+                await self._poll_chat_with_client(
+                    telegram_user_id, str(chat["max_chat_id"]), max_client
+                )
         except AuthError:
             raise
         finally:
@@ -61,6 +66,22 @@ class InboundSyncService:
 
     async def poll_chat(self, telegram_user_id: int, max_chat_id: str) -> None:
         """Poll a specific chat for new messages and deliver to Telegram."""
+        binding = await self._binding_repo.get(telegram_user_id)
+        if binding is None:
+            return
+
+        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+        try:
+            await max_client.start()  # type: ignore[attr-defined]
+            await self._poll_chat_with_client(telegram_user_id, max_chat_id, max_client)
+        except AuthError:
+            raise
+        finally:
+            await max_client.close()
+
+    async def _poll_chat_with_client(
+        self, telegram_user_id: int, max_chat_id: str, max_client: MaxClient
+    ) -> None:
         # Get topic mapping
         topic = await self._topic_repo.get_by_user_and_chat(telegram_user_id, max_chat_id)
         if topic is None:
@@ -71,20 +92,7 @@ class InboundSyncService:
         since_id = cursor.last_max_message_id if cursor else None
 
         # Fetch new messages from MAX
-        binding = await self._binding_repo.get(telegram_user_id)
-        if binding is None:
-            return
-
-        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
-        try:
-            await max_client.start()  # type: ignore[attr-defined]
-            messages = await max_client.get_messages(
-                max_chat_id, since_message_id=since_id, limit=50
-            )
-        except AuthError:
-            raise
-        finally:
-            await max_client.close()
+        messages = await max_client.get_messages(max_chat_id, since_message_id=since_id, limit=50)
 
         if not messages:
             return
@@ -148,9 +156,22 @@ class InboundSyncService:
     def _render_message(self, msg: dict[str, Any]) -> str:
         """Render a MAX message to Telegram text. Fallback for unsupported types."""
         msg_type = msg.get("type", "unknown")
+        prefix = self._render_prefix(msg)
 
         if msg_type == "text":
-            return msg.get("text", "")
+            body = msg.get("text", "")
+            return f"{prefix}\n{body}".strip()
 
         # Fallback for unsupported media types
-        return f"[{msg_type}]: {msg.get('description', 'Unsupported content')}"
+        body = f"[{msg_type}]: {msg.get('description', 'Unsupported content')}"
+        return f"{prefix}\n{body}".strip()
+
+    def _render_prefix(self, msg: dict[str, Any]) -> str:
+        sender_name = (msg.get("sender_name") or "Unknown").strip()
+        raw_time = msg.get("time")
+        if raw_time:
+            timestamp = datetime.fromtimestamp(int(raw_time) / 1000, tz=UTC)
+            formatted_time = timestamp.strftime("%d.%m.%y %H:%M")
+        else:
+            formatted_time = "??.??.?? ??:??"
+        return f"[{sender_name} {formatted_time}]"

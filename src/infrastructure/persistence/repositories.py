@@ -116,9 +116,13 @@ class SqliteMaxChatRepository(MaxChatRepository):
 
     async def save(self, chat: MaxChat) -> None:
         await self._db.execute(  # type: ignore[reportAttributeAccessIssue]
-            "INSERT OR IGNORE INTO max_chats "
+            "INSERT INTO max_chats "
             "(max_chat_id, binding_telegram_user_id, title, chat_type) "
-            "VALUES (?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(max_chat_id) DO UPDATE SET "
+            "binding_telegram_user_id = excluded.binding_telegram_user_id, "
+            "title = excluded.title, "
+            "chat_type = excluded.chat_type",
             chat.max_chat_id,
             chat.binding_telegram_user_id,
             chat.title,

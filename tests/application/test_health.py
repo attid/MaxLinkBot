@@ -251,3 +251,31 @@ class TestBackgroundPoller:
         poller._running = True  # type: ignore[reportPrivateUsage]
         await poller.stop()
         await poller._poll_once()  # type: ignore[reportPrivateUsage]
+
+    async def test_poll_user_swallows_unexpected_inbound_exception(self) -> None:
+        repos = MockHealthRepos()
+        binding = Binding(
+            telegram_user_id=123,
+            max_session_data="session",
+            status=BindingStatus.ACTIVE,
+            created_at=0,
+            updated_at=0,
+        )
+        repos.binding_repo.get = AsyncMock(return_value=binding)
+
+        health = MagicMock()
+        health.check_and_notify = AsyncMock()
+
+        inbound = MagicMock()
+        inbound.poll_user = AsyncMock(side_effect=RuntimeError("boom"))
+
+        poller = BackgroundPoller(
+            binding_repo=repos.binding_repo,
+            health_service=health,
+            inbound_factory=lambda _uid: inbound,
+            poll_interval=60.0,
+        )
+
+        await poller._poll_user(123)  # type: ignore[reportPrivateUsage]
+
+        inbound.poll_user.assert_awaited_once_with(123)

@@ -17,6 +17,10 @@ Python import path: `from pymax import MaxClient`
 - Session data is persisted on disk in per-user directories under `MAX_WORK_DIR/{telegram_user_id}/`.
 - The runtime keeps one logical MAX session per Telegram user binding.
 - The project wraps the external client behind its own adapter in `src/infrastructure/max/adapter.py`.
+- `MaxClient.fetch_chats()` may return `ChatType.DIALOG` chats with `title=None`; for those chats the usable identity comes from `participants` and `owner`.
+- `MaxClient.fetch_users()` / `get_cached_user()` return `User` objects whose display names are available via `user.names[]`.
+- `MaxClient.fetch_history()` exposes sender identity as an ID (`sender` / `sender_id`) and message time as an epoch-milliseconds timestamp.
+- Human-readable titles for MAX dialogs can be resolved as "the participant whose ID differs from chat.owner".
 
 ## Known Unknowns
 

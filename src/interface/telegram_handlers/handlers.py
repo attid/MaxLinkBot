@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, Message
@@ -13,6 +15,7 @@ from src.application.reconcile.service import RefreshReconcileService
 from src.application.routing.outbound import OutboundSyncService
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def register_handlers(
@@ -30,16 +33,28 @@ def register_handlers(
         if message.from_user is None:
             return
         telegram_user_id = message.from_user.id
+        logger.info("/start received from telegram_user_id=%s", telegram_user_id)
 
         if not allowlist_gate.is_allowed(telegram_user_id):
+            logger.info("/start ignored for non-allowlisted telegram_user_id=%s", telegram_user_id)
             return
 
         binding = await auth_service.get_active_binding(telegram_user_id)
+        logger.info(
+            "/start binding lookup telegram_user_id=%s binding_exists=%s",
+            telegram_user_id,
+            binding is not None,
+        )
 
         if binding is None or binding.requires_reauth():
             try:
+                logger.info("/start entering auth flow telegram_user_id=%s", telegram_user_id)
                 auth_start = await auth_service.begin_qr_auth(telegram_user_id)
                 if auth_start.session_restored:
+                    logger.info(
+                        "/start restored MAX session telegram_user_id=%s; starting reconcile",
+                        telegram_user_id,
+                    )
                     await auth_service.complete_qr_auth(auth_start.client, telegram_user_id)
                     await reconcile_service.reconcile(telegram_user_id)
                     await message.answer("Existing MAX session restored. Your chats are up to date.")
@@ -52,15 +67,55 @@ def register_handlers(
                 await auth_service.complete_qr_auth(auth_start.client, telegram_user_id)
                 await message.answer("Authorized! Send /start to sync your chats.")
             except AuthError as e:
+                logger.exception(
+                    "/start auth flow failed telegram_user_id=%s error=%s",
+                    telegram_user_id,
+                    e,
+                )
                 await message.answer(f"QR auth failed: {e}")
             return
 
         try:
+            logger.info("/start running reconcile telegram_user_id=%s", telegram_user_id)
             await reconcile_service.reconcile(telegram_user_id)
+            logger.info("/start reconcile finished telegram_user_id=%s", telegram_user_id)
             await message.answer("Sync complete. Your chats are up to date.")
         except AuthError:
+            logger.exception("/start reconcile auth error telegram_user_id=%s", telegram_user_id)
             await message.answer("MAX session expired. Send /start to re-authorize.")
             await auth_service.mark_reauth_required(telegram_user_id)
+        except Exception:
+            logger.exception("/start reconcile unexpected error telegram_user_id=%s", telegram_user_id)
+            await message.answer("Sync failed. Check logs and try /start again.")
+
+    @router.message(Command("resync"))
+    async def handle_resync(message: Message) -> None:  # type: ignore[reportUnusedFunction]
+        if message.from_user is None:
+            return
+        telegram_user_id = message.from_user.id
+        logger.info("/resync received from telegram_user_id=%s", telegram_user_id)
+
+        if not allowlist_gate.is_allowed(telegram_user_id):
+            logger.info("/resync ignored for non-allowlisted telegram_user_id=%s", telegram_user_id)
+            return
+
+        binding = await auth_service.get_active_binding(telegram_user_id)
+        if binding is None or binding.requires_reauth():
+            await message.answer("MAX session invalid. Send /start to authorize first.")
+            return
+
+        try:
+            logger.info("/resync running full rebuild telegram_user_id=%s", telegram_user_id)
+            await reconcile_service.reconcile(telegram_user_id, force_recreate=True)
+            logger.info("/resync finished telegram_user_id=%s", telegram_user_id)
+            await message.answer("Full topic rebuild complete.")
+        except AuthError:
+            logger.exception("/resync auth error telegram_user_id=%s", telegram_user_id)
+            await message.answer("MAX session expired. Send /start to re-authorize.")
+            await auth_service.mark_reauth_required(telegram_user_id)
+        except Exception:
+            logger.exception("/resync unexpected error telegram_user_id=%s", telegram_user_id)
+            await message.answer("Resync failed. Check logs and try /resync again.")
 
     @router.message()
     async def handle_message(message: Message) -> None:  # type: ignore[reportUnusedFunction]
@@ -87,4 +142,4 @@ def register_handlers(
             return
 
         # Plain text in main chat
-        await message.answer("Send /start to sync chats.")
+        await message.answer("Send /start to sync chats or /resync to rebuild topics.")

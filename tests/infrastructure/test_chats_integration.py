@@ -64,6 +64,31 @@ class TestMaxChatRepositoryIsolation:
         assert {c.max_chat_id for c in user_100_chats} == {"chat_X"}
         assert {c.max_chat_id for c in user_200_chats} == {"chat_Y"}
 
+    async def test_save_updates_existing_chat_title(self, db_with_bindings: Database) -> None:
+        chat_repo = SqliteMaxChatRepository(db_with_bindings)
+
+        await chat_repo.save(
+            MaxChat(
+                max_chat_id="chat_X",
+                binding_telegram_user_id=100,
+                title="",
+                chat_type=ChatType.PERSONAL,
+            )
+        )
+        await chat_repo.save(
+            MaxChat(
+                max_chat_id="chat_X",
+                binding_telegram_user_id=100,
+                title="Updated Title",
+                chat_type=ChatType.PERSONAL,
+            )
+        )
+
+        chat = await chat_repo.get("chat_X")
+
+        assert chat is not None
+        assert chat.title == "Updated Title"
+
 
 class TestTelegramTopicRepositoryIsolation:
     async def test_topic_unique_per_user_and_chat(self, db_with_bindings: Database) -> None:
