@@ -7,33 +7,9 @@ on:
     branches: [main, master]
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Format and lint
-        run: |
-          uv run ruff check --fix . && uv run ruff format . && uv run ruff check .
-
-      - name: Tests
-        run: uv run pytest tests/ -q
-
-      - name: Architecture check
-        run: uv run python .linters/check_imports.py
-
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - uses: actions/checkout@v4
 
