@@ -2,7 +2,7 @@
 
 ## Назначение
 
-`docs/` хранит всю рабочую правду по проекту до появления кода и после него.
+`docs/` хранит рабочую правду по проекту: архитектуру, контракты, execution plans и эксплуатационные инструкции для уже существующей кодовой базы.
 
 ## Порядок чтения
 
@@ -11,24 +11,24 @@
 3. [conventions.md](/home/itolstov/Projects/other/MaxLinkBot/docs/conventions.md)
 4. [glossary.md](/home/itolstov/Projects/other/MaxLinkBot/docs/glossary.md)
 5. [quality-grades.md](/home/itolstov/Projects/other/MaxLinkBot/docs/quality-grades.md)
-6. активные задачи в `docs/exec-plans/active/`
+6. [configuration.md](/home/itolstov/Projects/other/MaxLinkBot/docs/configuration.md)
+7. активные задачи в `docs/exec-plans/active/`
 
 ## Состав
 
-- `plans/`:
-  мастер-план первой версии и большие проектные документы.
-- `exec-plans/active/`:
-  очереди задач для реализации.
-- `exec-plans/completed/`:
-  архив завершенных задач.
+- `exec-plans/`:
+  планы выполнения: `active/` (очередь задач) и `completed/` (архив).
 - `runbooks/`:
-  будущие инструкции по эксплуатации и отладке.
+  инструкции по эксплуатации и отладке.
+- `maxapi-python-contract.md`:
+  зафиксированные наблюдения и ограничения интеграции с MAX WebSocket client.
 
 ## Текущая цель
 
-Подготовить первую версию персонального многопользовательского Telegram-шлюза к реализации:
+Довести первую версию персонального многопользовательского Telegram-шлюза до согласованного и проверяемого состояния:
 - один Telegram-бот;
 - allowlist разрешенных Telegram-пользователей;
 - один MAX-аккаунт на одного Telegram-пользователя;
+- QR/session-based auth через `maxapi-python`;
 - двусторонняя доставка сообщений между Telegram topics и личными чатами MAX;
 - строгая изоляция пользовательских контекстов.

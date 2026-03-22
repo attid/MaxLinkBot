@@ -31,13 +31,9 @@ First-time deployment. Bot does not start, or starts but users cannot authentica
 - Format must be comma-separated integers: `"123456,789012"`
 - No spaces, no quotes in the value itself.
 
-### Wrong MAX_BASE_URL
-- Auth errors when user attempts `/start`.
-- Fix: Verify Pumax API URL with your MAX administrator.
-
 ### SQLite volume not persisted
 - Database resets on every restart.
-- Fix: Ensure `maxlinkbot-data` volume is created and mounted correctly.
+- Fix: Ensure `/data` volume is mounted and writable.
 
 ## Resolution
 

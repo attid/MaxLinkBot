@@ -1,7 +1,7 @@
 [project]
 name = "maxlinkbot"
 version = "0.1.0"
-description = "Personal multi-user Telegram-to-MAX gateway via Pumax"
+description = "Personal multi-user Telegram-to-MAX gateway via maxapi-python"
 requires-python = ">=3.11"
 dependencies = [
     "aiogram>=3.0.0",

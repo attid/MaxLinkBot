@@ -37,7 +37,7 @@ class AllowlistGate:
 class AuthorizationFlowService:
     """Handles MAX authentication and binding lifecycle.
 
-    pymax persists sessions to work_dir/{telegram_user_id}/.
+    The MAX client persists sessions to work_dir/{telegram_user_id}/.
     The binding stores the phone number in max_session_data.
     """
 
@@ -85,7 +85,7 @@ class AuthorizationFlowService:
     async def complete_qr_auth(self, client: MaxClient, telegram_user_id: int) -> Binding:
         """Save binding after QR scan.
 
-        The QR scan completed and token is saved in pymax's session DB.
+        The QR scan completed and the token is saved in the client's session DB.
         Client stays connected for inbound polling (do NOT close it here).
         """
 

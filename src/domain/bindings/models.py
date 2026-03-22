@@ -13,7 +13,7 @@ class Binding(BaseModel):
     """Binding links a Telegram user to a MAX session."""
 
     telegram_user_id: int
-    max_session_data: str = ""  # kept for DB migration compat; pymax persists to disk
+    max_session_data: str = ""  # kept for DB migration compat; session data persists to disk
     status: BindingStatus = BindingStatus.ACTIVE
     created_at: int  # Unix timestamp
     updated_at: int  # Unix timestamp

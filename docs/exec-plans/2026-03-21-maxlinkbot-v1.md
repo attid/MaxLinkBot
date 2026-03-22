@@ -6,7 +6,7 @@
 
 **Architecture:** Система строится вокруг пользовательского binding и явного topic mapping. `/start` одновременно служит входом в авторизацию и reconcile-процедурой, а фоновые pollers работают только по активным binding.
 
-**Tech Stack:** Python, aiogram, Docker, SQLite, Pumax, `love-apples/maxapi`.
+**Tech Stack:** Python, aiogram, Docker, SQLite, `maxapi-python`.
 
 ---
 

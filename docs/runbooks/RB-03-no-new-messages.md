@@ -49,11 +49,11 @@
 - Telegram API errors (rate limiting, bot blocked by user).
 - Fix: Check Telegram API status. User may have blocked the bot.
 
-### MAX API issues
-- MAX client errors in logs.
-- Fix: Verify `MAX_BASE_URL` is correct and reachable from container.
+### MAX session issues
+- MAX client errors in logs (WebSocket disconnection, auth errors).
+- Fix: Check `MAX_WORK_DIR` is writable and session files exist for the user.
 
 ## Resolution
 1. Run reconcile for affected user: ask them to send `/start`.
 2. If Telegram API issue: resolve upstream.
-3. If MAX API issue: verify network connectivity and `MAX_BASE_URL`.
+3. If MAX session issue: check `MAX_WORK_DIR/{telegram_user_id}/session.db` exists.

@@ -1,4 +1,4 @@
-"""Port for the MAX client (Pumax)."""
+"""Port for the MAX client integration."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 
 class MaxClient(ABC):
-    """Interface to MAX via Pumax. All Pumax interaction goes through this port."""
+    """Interface to MAX. All MAX client interaction goes through this port."""
 
     @abstractmethod
     async def authenticate(self, credentials: dict[str, str]) -> str:

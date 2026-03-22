@@ -1,7 +1,7 @@
 """
-MAX client adapter wrapping pymax (maxapi-python).
+MAX client adapter wrapping `maxapi-python`.
 
-pymax is a WebSocket client — it connects via phone auth or QR code
+The underlying client is WebSocket-based and connects via phone auth or QR code
 and maintains a persistent session per-user in work_dir.
 """
 
@@ -38,7 +38,7 @@ class PymaxMessage:
 
 
 class PymaxAdapter(MaxClientPort):
-    """Adapter wrapping a live pymax MaxClient."""
+    """Adapter wrapping a live MAX WebSocket client."""
 
     def __init__(self, client: MaxClient) -> None:
         self._client = client
@@ -195,7 +195,7 @@ def max_client_factory(work_dir: str) -> Callable[[int, str | None], MaxClientPo
     def create(telegram_user_id: int, phone: str | None = None) -> MaxClientPort:
         user_dir = os.path.join(work_dir, str(telegram_user_id))
         headers = UserAgentPayload(device_type="WEB", app_version="25.12.13")
-        # For QR auth, pymax requires a valid-format phone (regex: ^\+?\d{10,15}$).
+        # For QR auth, the client requires a valid-format phone (regex: ^\+?\d{10,15}$).
         # Use a placeholder — the phone is not used during QR login.
         client_phone = phone if phone and phone != "qr_auth" else "+000000000000"
         client = MaxClient(

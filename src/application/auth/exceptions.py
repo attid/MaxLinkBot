@@ -2,7 +2,7 @@
 
 
 class AuthError(Exception):
-    """Raised when Pumax authentication fails."""
+    """Raised when MAX authentication fails."""
 
 
 class SessionExpiredError(AuthError):

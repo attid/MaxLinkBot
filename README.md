@@ -1,6 +1,6 @@
 # MaxLinkBot
 
-Personal multi-user Telegram-to-MAX gateway via Pumax.
+Personal multi-user Telegram-to-MAX gateway via `maxapi-python`.
 
 One bot serves several allowed Telegram users — each with their own MAX account, isolated from each other.
 
@@ -31,7 +31,7 @@ All configuration is via environment variables.
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
 | `ALLOWED_TELEGRAM_USER_IDS` | Yes | Comma-separated list of allowed Telegram user IDs |
-| `MAX_BASE_URL` | Yes | Pumax MAX API base URL |
+| `MAX_WORK_DIR` | No | Directory for per-user MAX session data |
 | `DATABASE_URL` | Yes | SQLite path, e.g. `sqlite+aiosqlite:///data/maxlinkbot.db` |
 | `POLL_INTERVAL_SECONDS` | No | Background poll interval (default: 30) |
 | `BACKFILL_MESSAGE_COUNT` | No | Number of messages to backfill on topic creation (default: 5) |
@@ -55,7 +55,8 @@ Create a `.env` file:
 ```env
 TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
 ALLOWED_TELEGRAM_USER_IDS=123456789,987654321
-MAX_BASE_URL=https://your-max-instance.example.com
+MAX_WORK_DIR=/data/max_sessions
+DATABASE_URL=sqlite+aiosqlite:////data/maxlinkbot.db
 POLL_INTERVAL_SECONDS=30
 BACKFILL_MESSAGE_COUNT=5
 LOG_LEVEL=INFO
