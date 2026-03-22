@@ -44,7 +44,7 @@ class TestReconcileService:
         repos.telegram.create_topic = AsyncMock(return_value=100)
         repos.max_chat_repo.get = AsyncMock(return_value=None)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.list_personal_chats = AsyncMock(
             return_value=[
                 {"max_chat_id": "chat1", "title": "Alice"},
@@ -80,7 +80,7 @@ class TestReconcileService:
             return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=10)]
         )
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.list_personal_chats = AsyncMock(
             return_value=[{"max_chat_id": "chat1", "title": "Alice"}]
         )
@@ -119,7 +119,7 @@ class TestReconcileService:
         )
         repos.telegram.create_topic = AsyncMock(return_value=200)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.list_personal_chats = AsyncMock(
             return_value=[{"max_chat_id": "chat_new", "title": "New Chat"}]
         )

@@ -43,7 +43,7 @@ class TestInboundSyncService:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(return_value=None)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.close = AsyncMock()
 
         def factory(_uid: int, _phone: str) -> MagicMock:
@@ -71,7 +71,7 @@ class TestInboundSyncService:
         repos.binding_repo.get = AsyncMock()
         repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=None)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.close = AsyncMock()
 
         def factory(_uid: int, _phone: str) -> MagicMock:
@@ -105,7 +105,7 @@ class TestInboundSyncService:
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.get_messages = AsyncMock(
             return_value=[
                 {"max_message_id": 10, "type": "text", "text": "Hello"},
@@ -149,7 +149,7 @@ class TestInboundSyncService:
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.get_messages = AsyncMock(
             return_value=[{"max_message_id": 10, "type": "text", "text": "Old"}]
         )
@@ -187,7 +187,7 @@ class TestInboundSyncService:
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.get_messages = AsyncMock(
             return_value=[{"max_message_id": 10, "type": "text", "text": "Hi"}]
         )

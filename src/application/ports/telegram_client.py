@@ -39,6 +39,15 @@ class TelegramClient(ABC):
         ...
 
     @abstractmethod
+    async def send_photo(self, chat_id: int, image_bytes: bytes) -> int:
+        """Send a photo from bytes.
+
+        Returns:
+            The sent message's Telegram message ID.
+        """
+        ...
+
+    @abstractmethod
     async def close(self) -> None:
         """Clean up resources."""
         ...

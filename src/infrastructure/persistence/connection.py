@@ -26,10 +26,7 @@ class Database:
         # sqlite+aiosqlite:///file.db   → file.db   (3 slashes = relative)
         # sqlite+aiosqlite:///:memory:  → :memory:   (3 slashes = memory)
         # sqlite+aiosqlite:////file.db  → /file.db   (4 slashes = absolute)
-        if "+aiosqlite://" in url:
-            raw = url.split("+aiosqlite://", 1)[1]
-        else:
-            raw = url.split("://", 1)[1]
+        raw = url.split("+aiosqlite://", 1)[1] if "+aiosqlite://" in url else url.split("://", 1)[1]
         # Count leading slashes: /// = 2, //// = 3
         leading_slashes = len(raw) - len(raw.lstrip("/"))
         stripped = raw.lstrip("/")

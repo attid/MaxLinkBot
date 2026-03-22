@@ -66,7 +66,7 @@ class TestHealthCheckService:
         )
         repos.audit_repo.has_recent_event = AsyncMock(return_value=True)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.is_session_valid = AsyncMock(return_value=False)
         max_client.close = AsyncMock()
 
@@ -99,7 +99,7 @@ class TestHealthCheckService:
         )
         repos.audit_repo.has_recent_event = AsyncMock(return_value=False)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.is_session_valid = AsyncMock(return_value=False)
         max_client.close = AsyncMock()
 
@@ -133,7 +133,7 @@ class TestHealthCheckService:
         )
         repos.audit_repo.has_recent_event = AsyncMock(return_value=False)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.is_session_valid = AsyncMock(return_value=True)
         max_client.close = AsyncMock()
 

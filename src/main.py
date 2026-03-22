@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 
 from aiogram import Bot, Dispatcher
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -139,31 +138,18 @@ async def main() -> None:
 
     # Register Telegram handlers
     dp = Dispatcher(bot=bot)
-    register_handlers(dp, allowlist_gate, auth_service, reconcile_service, outbound_service)
-
-    # Graceful shutdown
-    shutdown_event = asyncio.Event()
-
-    def request_shutdown() -> None:
-        logger.info("Shutdown signal received")
-        shutdown_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, request_shutdown)
+    register_handlers(dp, allowlist_gate, auth_service, reconcile_service, outbound_service, tg_client)
 
     # Start background poller
     asyncio.create_task(poller.start())
 
     logger.info("Bot starting...")
-    try:
-        # Stop polling when shutdown is triggered
-        await shutdown_event.wait()
-    finally:
-        await poller.stop()
-        await bot.session.close()
-        await db.close()
-        logger.info("Shutdown complete")
+    await dp.start_polling(bot)  # type: ignore[reportUnknownMemberType]
+
+    await poller.stop()
+    await bot.session.close()
+    await db.close()
+    logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":

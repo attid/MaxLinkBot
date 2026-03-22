@@ -35,7 +35,7 @@ class TestOutboundSyncService:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(return_value=None)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.close = AsyncMock()
 
         def factory(_uid: int, _phone: str) -> MagicMock:
@@ -62,7 +62,7 @@ class TestOutboundSyncService:
         repos.binding_repo.get = AsyncMock(return_value=mock_binding)
         repos.topic_repo.get_by_user_and_topic = AsyncMock(return_value=None)
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.close = AsyncMock()
 
         def factory(_uid: int, _phone: str) -> MagicMock:
@@ -95,7 +95,7 @@ class TestOutboundSyncService:
         repos.message_link_repo.save = AsyncMock()
         repos.audit_repo.log = AsyncMock()
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.send_message = AsyncMock(return_value="max_msg_xyz")
         max_client.close = AsyncMock()
 
@@ -134,7 +134,7 @@ class TestOutboundSyncService:
 
         repos.audit_repo.log = AsyncMock()
 
-        max_client = MagicMock()
+        max_client = MagicMock(start=AsyncMock())
         max_client.send_message = AsyncMock(side_effect=Exception("Network error"))
         max_client.close = AsyncMock()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 
 from src.application.ports.telegram_client import TelegramClient
 
@@ -22,6 +23,13 @@ class AiogramTelegramAdapter(TelegramClient):
             chat_id=chat_id,
             message_thread_id=topic_id,
             text=text,
+        )
+        return msg.message_id  # type: ignore[return-value]
+
+    async def send_photo(self, chat_id: int, image_bytes: bytes) -> int:
+        msg = await self._bot.send_photo(
+            chat_id=chat_id,
+            photo=BufferedInputFile(image_bytes, filename="qr.png"),
         )
         return msg.message_id  # type: ignore[return-value]
 

@@ -53,6 +53,7 @@ class HealthCheckService:
         # Validate session
         max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
+            await max_client.start()  # type: ignore[attr-defined]
             is_valid = await max_client.is_session_valid()
         except AuthError:
             is_valid = False

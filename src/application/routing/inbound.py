@@ -52,6 +52,7 @@ class InboundSyncService:
 
         max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
+            await max_client.start()  # type: ignore[attr-defined]
             await max_client.list_personal_chats()
         except AuthError:
             raise
@@ -76,6 +77,7 @@ class InboundSyncService:
 
         max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
+            await max_client.start()  # type: ignore[attr-defined]
             messages = await max_client.get_messages(
                 max_chat_id, since_message_id=since_id, limit=50
             )

@@ -1,3 +1,5 @@
+set dotenv-load := true
+
 # Default: full check
 default: check
 
@@ -38,3 +40,12 @@ clean:
   rm -rf .pytest_cache .ruff_cache dist build *.egg-info
   find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
   find . -type f -name "*.pyc" -delete
+
+# Run bot in docker — uses ./data for session + DB
+run:
+  docker build -t maxlinkbot:test .
+  docker run --rm --name maxlinkbot \
+    -v $(pwd)/data:/data \
+    -e TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN} \
+    -e ALLOWED_TELEGRAM_USER_IDS=${ALLOWED_TELEGRAM_USER_IDS} \
+    maxlinkbot:test
