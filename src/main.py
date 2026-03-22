@@ -37,10 +37,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
     telegram_bot_token: str
-    allowed_telegram_user_ids: str
-    max_phone: str
-    max_work_dir: str
-    database_url: str
+    allowed_telegram_user_ids: str = ""
+    max_work_dir: str = "/data/max_sessions"
+    database_url: str = "sqlite+aiosqlite:////data/maxlinkbot.db"
     poll_interval_seconds: int = 30
     backfill_message_count: int = 5
     log_level: str = "INFO"
@@ -74,7 +73,7 @@ async def main() -> None:
     audit_repo = SqliteAuditRepository(db)
 
     # MAX client factory
-    max_factory = max_client_factory(settings.max_phone, settings.max_work_dir)
+    max_factory = max_client_factory(settings.max_work_dir)
 
     # Telegram client + bot
     bot = Bot(token=settings.telegram_bot_token)
@@ -87,6 +86,7 @@ async def main() -> None:
         binding_repo=binding_repo,
         audit_repo=audit_repo,
         max_client_factory=max_factory,
+        work_dir=settings.max_work_dir,
     )
 
     reconcile_service = RefreshReconcileService(

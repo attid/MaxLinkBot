@@ -46,7 +46,7 @@ class TestInboundSyncService:
         max_client = MagicMock()
         max_client.close = AsyncMock()
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = InboundSyncService(
@@ -74,7 +74,7 @@ class TestInboundSyncService:
         max_client = MagicMock()
         max_client.close = AsyncMock()
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = InboundSyncService(
@@ -116,7 +116,7 @@ class TestInboundSyncService:
 
         repos.telegram.send_text_to_topic = AsyncMock(side_effect=[100, 101])
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = InboundSyncService(
@@ -155,7 +155,7 @@ class TestInboundSyncService:
         )
         max_client.close = AsyncMock()
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = InboundSyncService(
@@ -195,7 +195,7 @@ class TestInboundSyncService:
 
         repos.telegram.send_text_to_topic = AsyncMock(side_effect=Exception("Telegram timeout"))
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = InboundSyncService(
@@ -225,7 +225,7 @@ class TestInboundSyncService:
             cursor_repo=repos.cursor_repo,
             audit_repo=repos.audit_repo,
             telegram_client=repos.telegram,
-            max_client_factory=lambda: MagicMock(),
+            max_client_factory=lambda _u, _p: MagicMock(),
         )
 
         # pyright: ignore — testing private method directly
@@ -242,7 +242,7 @@ class TestInboundSyncService:
             cursor_repo=repos.cursor_repo,
             audit_repo=repos.audit_repo,
             telegram_client=repos.telegram,
-            max_client_factory=lambda: MagicMock(),
+            max_client_factory=lambda _u, _p: MagicMock(),
         )
 
         result = service._render_message({"type": "image", "description": "Sunset photo"})  # type: ignore[reportPrivateUsage]
@@ -259,7 +259,7 @@ class TestInboundSyncService:
             cursor_repo=repos.cursor_repo,
             audit_repo=repos.audit_repo,
             telegram_client=repos.telegram,
-            max_client_factory=lambda: MagicMock(),
+            max_client_factory=lambda _u, _p: MagicMock(),
         )
 
         result = service._render_message({})  # type: ignore[reportPrivateUsage]

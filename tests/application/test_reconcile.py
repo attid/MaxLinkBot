@@ -54,7 +54,7 @@ class TestReconcileService:
         max_client.get_messages = AsyncMock(return_value=[])
         max_client.close = AsyncMock()
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = RefreshReconcileService(
@@ -86,7 +86,7 @@ class TestReconcileService:
         )
         max_client.close = AsyncMock()
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = RefreshReconcileService(
@@ -126,7 +126,7 @@ class TestReconcileService:
         max_client.get_messages = AsyncMock(return_value=[])
         max_client.close = AsyncMock()
 
-        def factory() -> MagicMock:
+        def factory(_uid: int, _phone: str) -> MagicMock:
             return max_client
 
         service = RefreshReconcileService(

@@ -36,7 +36,7 @@ class TestAllowlistGate:
 def make_auth_service(binding_repo: MagicMock, audit_repo: MagicMock) -> AuthorizationFlowService:
     """Factory that creates an AuthorizationFlowService with a working mock client."""
 
-    def factory() -> MagicMock:
+    def factory(_uid: int, _phone: str) -> MagicMock:
         client = MagicMock()
         client.authenticate = AsyncMock(return_value="+79112223344")
         client.is_session_valid = AsyncMock(return_value=True)
@@ -47,6 +47,7 @@ def make_auth_service(binding_repo: MagicMock, audit_repo: MagicMock) -> Authori
         binding_repo=binding_repo,
         audit_repo=audit_repo,
         max_client_factory=factory,
+        work_dir="/tmp/max",
     )
 
 
@@ -75,7 +76,7 @@ class TestAuthorizationFlowService:
         audit_repo = MagicMock()
         audit_repo.log = AsyncMock()
 
-        def failing_factory() -> MagicMock:
+        def failing_factory(_uid: int, _phone: str) -> MagicMock:
             client = MagicMock()
             client.authenticate = AsyncMock(side_effect=AuthError("Invalid"))
             client.close = AsyncMock()
@@ -85,6 +86,7 @@ class TestAuthorizationFlowService:
             binding_repo=binding_repo,
             audit_repo=audit_repo,
             max_client_factory=failing_factory,
+            work_dir="/tmp/max",
         )
 
         with pytest.raises(AuthError):

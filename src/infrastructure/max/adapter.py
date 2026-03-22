@@ -2,13 +2,14 @@
 MAX client adapter wrapping pymax (maxapi-python).
 
 pymax is a WebSocket client — it connects via phone auth and maintains
-a persistent session in work_dir. No base_url needed.
+a persistent session per-user in work_dir.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -33,42 +34,25 @@ class PymaxMessage:
     time: int
 
 
-@dataclass
-class PymaxChat:
-    """Chat data extracted from pymax Chat type."""
-
-    id: int
-    name: str
-    type: str
-
-
 class PymaxAdapter(MaxClientPort):
-    """Adapter wrapping a live pymax MaxClient.
-
-    Receives messages via WebSocket and buffers them for poll-based access.
-    """
+    """Adapter wrapping a live pymax MaxClient."""
 
     def __init__(self, client: MaxClient) -> None:
         self._client = client
         self._buffer: list[PymaxMessage] = []
         self._lock = asyncio.Lock()
         self._started = False
-        self._on_start_handlers: list[Callable[[], Any]] = []
         self._registered = False
 
-    # ---- MaxClient port implementation ----
-
     async def authenticate(self, credentials: dict[str, str]) -> str:
-        """Request SMS code. Returns the phone used (session persists in work_dir)."""
+        """Request SMS code. Returns the phone used."""
         phone = credentials.get("phone")
         if not phone:
             raise ValueError("phone is required for authentication")
         await self._client.request_code(phone)  # type: ignore[reportUnknownMemberType]
-        return phone  # pymax persists session to disk; no session_data needed
+        return phone
 
     async def restore_session(self, session_data: str) -> None:
-        """Session is managed by pymax internally in work_dir. No-op."""
-        # pymax auto-restores from session.db in work_dir on start()
         pass
 
     async def list_personal_chats(self) -> list[dict[str, Any]]:
@@ -103,11 +87,9 @@ class PymaxAdapter(MaxClientPort):
         return str(msg.id) if msg else ""
 
     async def create_topic(self, title: str) -> str:
-        # MAX personal chats are created implicitly; no explicit create needed
         raise NotImplementedError("create_topic not needed for MAX personal chats")
 
     async def is_session_valid(self) -> bool:
-        # pymax manages session internally; assume valid if connected
         return self._started
 
     async def close(self) -> None:
@@ -115,10 +97,7 @@ class PymaxAdapter(MaxClientPort):
             await self._client.close()
             self._started = False
 
-    # ---- Internal helpers ----
-
     async def start(self) -> None:
-        """Connect and register message handlers once."""
         if self._started:
             return
         if not self._registered:
@@ -128,7 +107,6 @@ class PymaxAdapter(MaxClientPort):
         self._started = True
 
     def _on_message(self, msg: Any) -> None:
-        """Called by pymax WebSocket thread — buffer the message."""
         asyncio.create_task(self._buffer_message(msg))
 
     async def _buffer_message(self, msg: Any) -> None:
@@ -136,24 +114,26 @@ class PymaxAdapter(MaxClientPort):
             self._buffer.append(PymaxMessage(
                 chat_id=msg.chat_id,
                 id=int(str(msg.id)),
-                text=msg.text or "",
-                sender_id=msg.sender_id or 0,
-                sender=msg.sender or "",
-                time=msg.time or 0,
+                text=getattr(msg, "text", None) or "",
+                sender_id=getattr(msg, "sender_id", None) or 0,
+                sender=getattr(msg, "sender", None) or "",
+                time=getattr(msg, "time", None) or 0,
             ))
 
 
-def max_client_factory(phone: str, work_dir: str) -> Callable[[], MaxClientPort]:
-    """Create a PymaxAdapter backed by a pymax MaxClient.
+def max_client_factory(work_dir: str) -> Callable[[int, str], MaxClientPort]:
+    """Factory: given work_dir, returns a callable(phone, user_dir_name) -> MaxClientPort.
 
-    The client is created once and reused.
+    Each user's session lives in work_dir/{telegram_user_id}/.
+    Phone is read from Binding.max_session_data at call time.
     """
 
-    def create() -> MaxClientPort:
+    def create(telegram_user_id: int, phone: str) -> MaxClientPort:
+        user_dir = os.path.join(work_dir, str(telegram_user_id))
         headers = UserAgentPayload(device_type="WEB", app_version="25.12.13")
         client = MaxClient(
             phone=phone,
-            work_dir=work_dir,
+            work_dir=user_dir,
             headers=headers,
         )
         return PymaxAdapter(client)

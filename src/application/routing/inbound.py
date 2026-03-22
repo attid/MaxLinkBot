@@ -33,7 +33,7 @@ class InboundSyncService:
         cursor_repo: SyncCursorRepository,
         audit_repo: AuditRepository,
         telegram_client: TelegramClient,
-        max_client_factory: Callable[[], MaxClient],
+        max_client_factory: Callable[[int, str], MaxClient],
     ) -> None:
         self._binding_repo = binding_repo
         self._max_chat_repo = max_chat_repo
@@ -50,7 +50,7 @@ class InboundSyncService:
         if binding is None:
             return
 
-        max_client = self._max_client_factory()
+        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
             await max_client.list_personal_chats()
         except AuthError:
@@ -74,7 +74,7 @@ class InboundSyncService:
         if binding is None:
             return
 
-        max_client = self._max_client_factory()
+        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
             messages = await max_client.get_messages(
                 max_chat_id, since_message_id=since_id, limit=50

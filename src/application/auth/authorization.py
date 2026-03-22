@@ -22,7 +22,6 @@ class AllowlistGate:
         return telegram_user_id in self._allowed
 
     def assert_allowed(self, telegram_user_id: int) -> None:
-        """Raise PermissionError if user is not in allowlist."""
         if not self.is_allowed(telegram_user_id):
             raise PermissionError(f"User {telegram_user_id} is not in allowlist.")
 
@@ -30,27 +29,29 @@ class AllowlistGate:
 class AuthorizationFlowService:
     """Handles MAX authentication and binding lifecycle.
 
-    pymax persists sessions to disk (work_dir), so no session_data
-    serialization is needed. The binding stores only the phone number.
+    pymax persists sessions to work_dir/{telegram_user_id}/.
+    The binding stores the phone number in max_session_data.
     """
 
     def __init__(
         self,
         binding_repo: BindingRepository,
         audit_repo: AuditRepository,
-        max_client_factory: Callable[[], MaxClient],
+        max_client_factory: Callable[[int, str], MaxClient],
+        work_dir: str,
     ) -> None:
         self._binding_repo = binding_repo
         self._audit_repo = audit_repo
         self._max_client_factory = max_client_factory
+        self._work_dir = work_dir
 
     async def start_auth(self, telegram_user_id: int, phone: str) -> Binding:
-        """Start auth: request SMS code and save binding with phone.
+        """Request SMS code and save binding with phone.
 
         Raises:
             AuthError: if pymax fails to request the code.
         """
-        client = self._max_client_factory()
+        client = self._max_client_factory(telegram_user_id, phone)
         try:
             await client.authenticate({"phone": phone})
         except AuthError:
@@ -66,7 +67,7 @@ class AuthorizationFlowService:
         now = int(time.time())
         binding = Binding(
             telegram_user_id=telegram_user_id,
-            max_session_data=phone,  # store phone for reference
+            max_session_data=phone,
             status=BindingStatus.ACTIVE,
             created_at=now,
             updated_at=now,
@@ -80,14 +81,18 @@ class AuthorizationFlowService:
         return binding
 
     async def complete_login(self, telegram_user_id: int, code: str) -> None:
-        """Complete login with the SMS code received by the user.
+        """Complete login with the SMS code.
 
         Raises:
             AuthError: if the code is invalid or expired.
         """
-        client = self._max_client_factory()
+        binding = await self._binding_repo.get(telegram_user_id)
+        if binding is None:
+            raise AuthError("No binding found for user")
+        phone = binding.max_session_data
+        client = self._max_client_factory(telegram_user_id, phone)
         try:
-            await client.authenticate({"code": code})  # type: ignore[arg-type]
+            await client.authenticate({"code": code})
         except Exception as e:
             raise AuthError(f"Login failed: {e}") from e
         finally:
@@ -99,9 +104,6 @@ class AuthorizationFlowService:
         if binding is None:
             return None
         if binding.status == BindingStatus.REAUTH_REQUIRED:
-            return binding
-        # pymax auto-restores session from disk; assume valid if binding exists
-        if binding.status == BindingStatus.ACTIVE:
             return binding
         return binding
 

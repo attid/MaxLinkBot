@@ -30,7 +30,7 @@ class RefreshReconcileService:
         cursor_repo: SyncCursorRepository,
         audit_repo: AuditRepository,
         telegram_client: TelegramClient,
-        max_client_factory: Callable[[], MaxClient],
+        max_client_factory: Callable[[int, str], MaxClient],
         backfill_count: int = 5,
     ) -> None:
         self._binding_repo = binding_repo
@@ -56,7 +56,7 @@ class RefreshReconcileService:
         if binding is None:
             raise ValueError(f"No binding for user {telegram_user_id}")
 
-        max_client = self._max_client_factory()
+        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
             max_chats_raw = await max_client.list_personal_chats()
         except AuthError:

@@ -23,7 +23,20 @@ class Database:
     @property
     def _db_path(self) -> Path:
         url = self._settings.database_url
-        return Path(url.split("+aiosqlite://")[1].lstrip("/"))
+        # sqlite+aiosqlite:///file.db   → file.db   (3 slashes = relative)
+        # sqlite+aiosqlite:///:memory:  → :memory:   (3 slashes = memory)
+        # sqlite+aiosqlite:////file.db  → /file.db   (4 slashes = absolute)
+        if "+aiosqlite://" in url:
+            raw = url.split("+aiosqlite://", 1)[1]
+        else:
+            raw = url.split("://", 1)[1]
+        # Count leading slashes: /// = 2, //// = 3
+        leading_slashes = len(raw) - len(raw.lstrip("/"))
+        stripped = raw.lstrip("/")
+        if leading_slashes >= 2:
+            # 4 slashes in URL → 3 after split → 2 leading → absolute path
+            return Path("/" + stripped)
+        return Path(stripped)
 
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(str(self._db_path))

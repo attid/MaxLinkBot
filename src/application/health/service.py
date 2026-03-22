@@ -30,7 +30,7 @@ class HealthCheckService:
         binding_repo: BindingRepository,
         audit_repo: AuditRepository,
         telegram_client: TelegramClient,
-        max_client_factory: Callable[[], MaxClient],
+        max_client_factory: Callable[[int, str], MaxClient],
     ) -> None:
         self._binding_repo = binding_repo
         self._audit_repo = audit_repo
@@ -51,7 +51,7 @@ class HealthCheckService:
             return
 
         # Validate session
-        max_client = self._max_client_factory()
+        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
         try:
             is_valid = await max_client.is_session_valid()
         except AuthError:
