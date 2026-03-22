@@ -20,8 +20,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
-      - name: Lint
-        run: uv run ruff check .
+      - name: Format and lint
+        run: |
+          uv run ruff check --fix . && uv run ruff format . && uv run ruff check .
 
       - name: Type check
         run: uv run pyright
