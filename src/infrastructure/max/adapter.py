@@ -36,6 +36,8 @@ class PymaxMessage:
     sender_id: int
     sender: str
     time: int
+    type: str
+    description: str
 
 
 class PymaxAdapter(MaxClientPort):
@@ -53,6 +55,7 @@ class PymaxAdapter(MaxClientPort):
         self._client_task: asyncio.Task[None] | None = None
         self._ready_event = asyncio.Event()
         self._user_cache: dict[int, tuple[float, str]] = {}
+        self._reconnect_detected = False
 
     async def authenticate(self, credentials: dict[str, str]) -> str:
         """No-op: QR auth is handled via start()."""
@@ -98,10 +101,12 @@ class PymaxAdapter(MaxClientPort):
             )
             return []
         result: list[dict[str, Any]] = []
+        raw_ids: list[str] = []
         for m in raw:
             mid = int(str(m.id))
+            raw_ids.append(str(m.id))
             if since is not None and mid <= since:
-                break
+                continue
             result.append(
                 {
                     "max_message_id": str(m.id),
@@ -113,10 +118,12 @@ class PymaxAdapter(MaxClientPort):
                 }
             )
         logger.info(
-            "max get_messages fetched max_chat_id=%s since_message_id=%s limit=%s count=%s",
+            "max get_messages fetched max_chat_id=%s since_message_id=%s limit=%s raw_ids=%s filtered_ids=%s count=%s",
             max_chat_id,
             since_message_id,
             limit,
+            raw_ids,
+            [message["max_message_id"] for message in result],
             len(result),
         )
         return result
@@ -233,6 +240,44 @@ class PymaxAdapter(MaxClientPort):
         msg = await self._client.send_message(text=text, chat_id=int(max_chat_id))
         return str(msg.id) if msg else ""
 
+    async def drain_buffered_messages(self) -> list[dict[str, Any]]:
+        async with self._lock:
+            buffered = list(self._buffer)
+            self._buffer.clear()
+
+        result: list[dict[str, Any]] = []
+        for message in buffered:
+            sender_name = message.sender
+            if not sender_name and message.sender_id:
+                sender_name = (await self._resolve_user_display_name(message.sender_id)) or str(
+                    message.sender_id
+                )
+            result.append(
+                {
+                    "max_message_id": str(message.id),
+                    "chat_id": str(message.chat_id),
+                    "text": message.text,
+                    "sender_id": message.sender_id,
+                    "sender_name": sender_name,
+                    "time": message.time,
+                    "type": message.type or "text",
+                    "description": message.description,
+                }
+            )
+
+        if result:
+            logger.info(
+                "max drain_buffered_messages count=%s ids=%s",
+                len(result),
+                [message["max_message_id"] for message in result],
+            )
+        return result
+
+    async def consume_reconnect_event(self) -> bool:
+        reconnect_detected = self._reconnect_detected
+        self._reconnect_detected = False
+        return reconnect_detected
+
     async def create_topic(self, title: str) -> str:
         raise NotImplementedError("create_topic not needed for MAX personal chats")
 
@@ -313,6 +358,9 @@ class PymaxAdapter(MaxClientPort):
 
         async def mark_ready() -> None:
             logger.info("max start on_start fired")
+            if self._started:
+                self._reconnect_detected = True
+                logger.info("max reconnect detected")
             self._ready_event.set()
 
         self._client.add_on_start_handler(mark_ready)
@@ -330,6 +378,8 @@ class PymaxAdapter(MaxClientPort):
         asyncio.create_task(self._buffer_message(msg))
 
     async def _buffer_message(self, msg: Any) -> None:
+        raw_type = getattr(msg, "type", None)
+        normalized_type = self._normalize_live_message_type(raw_type, getattr(msg, "text", None))
         async with self._lock:
             self._buffer.append(
                 PymaxMessage(
@@ -339,11 +389,44 @@ class PymaxAdapter(MaxClientPort):
                     sender_id=getattr(msg, "sender_id", None) or 0,
                     sender=getattr(msg, "sender", None) or "",
                     time=getattr(msg, "time", None) or 0,
+                    type=normalized_type,
+                    description=str(getattr(msg, "description", None) or ""),
                 )
             )
+        logger.info(
+            "max buffered live message chat_id=%s message_id=%s raw_type=%r normalized_type=%s has_text=%s",
+            getattr(msg, "chat_id", None),
+            getattr(msg, "id", None),
+            raw_type,
+            normalized_type,
+            bool(getattr(msg, "text", None)),
+        )
+
+    def _normalize_live_message_type(self, raw_type: Any, text: Any) -> str:
+        if isinstance(raw_type, str):
+            normalized = raw_type.strip().lower()
+        else:
+            name = getattr(raw_type, "name", None)
+            value = getattr(raw_type, "value", None)
+            normalized = ""
+            if isinstance(name, str):
+                normalized = name.strip().lower()
+            elif isinstance(value, str):
+                normalized = value.strip().lower()
+            elif raw_type is not None:
+                normalized = str(raw_type).strip().lower()
+
+        if normalized.endswith(".text") or normalized == "text":
+            return "text"
+        if text:
+            return "text"
+        return normalized or "unknown"
 
 
-def max_client_factory(work_dir: str) -> Callable[[int, str | None], MaxClientPort]:
+def max_client_factory(
+    work_dir: str,
+    reconnect: bool = True,
+) -> Callable[[int, str | None], MaxClientPort]:
     """Factory: given work_dir, returns a callable(telegram_user_id, phone?) -> MaxClientPort.
 
     Each user's session lives in work_dir/{telegram_user_id}/.
@@ -360,7 +443,7 @@ def max_client_factory(work_dir: str) -> Callable[[int, str | None], MaxClientPo
             phone=client_phone,
             work_dir=user_dir,
             headers=headers,
-            reconnect=True,  # stay connected for inbound polling
+            reconnect=reconnect,
         )
         return PymaxAdapter(client)
 

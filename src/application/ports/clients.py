@@ -53,6 +53,20 @@ class MaxClient(ABC):
         ...
 
     @abstractmethod
+    async def drain_buffered_messages(self) -> list[dict[str, Any]]:
+        """Drain live MAX messages captured from the WebSocket message handler.
+
+        Returns:
+            list of dicts with message data buffered since the previous drain.
+        """
+        ...
+
+    @abstractmethod
+    async def consume_reconnect_event(self) -> bool:
+        """Return whether the live client reconnected since the previous check."""
+        ...
+
+    @abstractmethod
     async def send_message(self, max_chat_id: str, text: str) -> str:
         """Send a text message to a MAX chat.
 

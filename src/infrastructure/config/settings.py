@@ -11,7 +11,9 @@ class AppSettings(BaseSettings):
     max_phone: str
     max_work_dir: str
     database_url: str = "sqlite+aiosqlite:///data/maxlinkbot.db"
-    poll_interval_seconds: int = 30
+    poll_interval_seconds: float = 1.0
+    health_check_interval_seconds: int = 300
+    catchup_interval_seconds: int = 3600
     backfill_message_count: int = 5
     log_level: str = "INFO"
 

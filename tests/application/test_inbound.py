@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, UTC
 from unittest.mock import AsyncMock, MagicMock
 
@@ -66,40 +67,36 @@ class TestInboundSyncService:
         repos.binding_repo.get.assert_called_once_with(123)
         max_client.list_personal_chats.assert_not_called()
 
-    async def test_poll_user_polls_each_max_chat(self) -> None:
+    async def test_poll_user_drains_live_buffer_without_history_polling(self) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(
-            side_effect=[
-                MagicMock(telegram_topic_id=50),
-                MagicMock(telegram_topic_id=60),
-            ]
-        )
-        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
-        repos.telegram.send_text_to_topic = AsyncMock(side_effect=[100, 101])
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=100)
 
         max_client = MagicMock(start=AsyncMock())
-        max_client.list_personal_chats = AsyncMock(
+        max_client.drain_buffered_messages = AsyncMock(
             return_value=[
-                {"max_chat_id": "chat1", "title": "Alice"},
-                {"max_chat_id": "chat2", "title": "Bob"},
+                {
+                    "max_message_id": "1",
+                    "chat_id": "chat1",
+                    "type": "text",
+                    "text": "Hello",
+                    "sender_name": "Alice",
+                    "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
+                }
             ]
         )
-        max_client.get_messages = AsyncMock(
-            side_effect=[
-                [{"max_message_id": "1", "type": "text", "text": "Hello"}],
-                [{"max_message_id": "2", "type": "text", "text": "World"}],
-            ]
-        )
+        max_client.list_personal_chats = AsyncMock(return_value=[])
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
         max_client.close = AsyncMock()
 
-        def factory(_uid: int, _phone: str) -> MagicMock:
-            return max_client
+        factory = MagicMock(return_value=max_client)
 
         service = InboundSyncService(
             binding_repo=repos.binding_repo,
@@ -115,10 +112,312 @@ class TestInboundSyncService:
         await service.poll_user(telegram_user_id=123)
 
         max_client.start.assert_awaited_once()
-        assert max_client.get_messages.await_count == 2
-        max_client.get_messages.assert_any_await("chat1", since_message_id=None, limit=50)
-        max_client.get_messages.assert_any_await("chat2", since_message_id=None, limit=50)
-        max_client.close.assert_awaited_once()
+        max_client.drain_buffered_messages.assert_awaited_once()
+        max_client.get_messages.assert_not_called()
+        max_client.close.assert_not_called()
+        factory.assert_called_once_with(123, "token")
+        repos.telegram.send_text_to_topic.assert_awaited_once()
+
+    async def test_poll_user_reuses_live_client_between_ticks(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.list_personal_chats = AsyncMock(return_value=[])
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.close = AsyncMock()
+
+        factory = MagicMock(return_value=max_client)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=factory,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+        await service.poll_user(telegram_user_id=123)
+
+        max_client.start.assert_awaited_once()
+        assert max_client.drain_buffered_messages.await_count == 2
+        max_client.close.assert_not_called()
+        factory.assert_called_once_with(123, "token")
+
+    async def test_poll_user_runs_catchup_for_existing_topics_on_interval(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(
+            return_value=[{"max_message_id": "2", "type": "text", "text": "Catchup"}]
+        )
+        max_client.close = AsyncMock()
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=0,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        max_client.get_messages.assert_awaited_once_with("chat1", since_message_id=None, limit=50)
+
+    async def test_poll_user_polls_only_dirty_chats_between_hourly_catchups(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(
+            return_value=[{"max_message_id": "2", "type": "text", "text": "Dirty reply"}]
+        )
+        max_client.close = AsyncMock()
+
+        shared_runtime = MagicMock()
+        shared_runtime.get_client = AsyncMock(return_value=max_client)
+        shared_runtime.get_dirty_chats = AsyncMock(return_value=["chat1"])
+        shared_runtime.clear_dirty_chat = AsyncMock()
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=3600,
+            shared_runtime=shared_runtime,
+        )
+
+        service._last_catchup_at = time.time()  # type: ignore[reportPrivateUsage]
+
+        await service.poll_user(telegram_user_id=123)
+
+        shared_runtime.get_dirty_chats.assert_awaited_once_with(123)
+        max_client.get_messages.assert_awaited_once_with("chat1", since_message_id=None, limit=50)
+
+    async def test_live_message_clears_dirty_chat_marker(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=100)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(
+            return_value=[
+                {
+                    "max_message_id": "1",
+                    "chat_id": "chat1",
+                    "type": "text",
+                    "text": "Hello",
+                    "sender_name": "Alice",
+                    "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
+                }
+            ]
+        )
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        shared_runtime = MagicMock()
+        shared_runtime.get_client = AsyncMock(return_value=max_client)
+        shared_runtime.get_dirty_chats = AsyncMock(return_value=[])
+        shared_runtime.clear_dirty_chat = AsyncMock()
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            shared_runtime=shared_runtime,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        shared_runtime.clear_dirty_chat.assert_awaited_once_with(123, "chat1")
+
+    async def test_poll_user_forces_full_catchup_after_reconnect(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=True)
+        max_client.get_messages = AsyncMock(
+            return_value=[{"max_message_id": "2", "type": "text", "text": "Reconnect catchup"}]
+        )
+        max_client.close = AsyncMock()
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=3600,
+        )
+
+        service._last_catchup_at = time.time()  # type: ignore[reportPrivateUsage]
+
+        await service.poll_user(telegram_user_id=123)
+
+        repos.topic_repo.find_by_user.assert_awaited_once_with(123)
+        max_client.get_messages.assert_awaited_once_with("chat1", since_message_id=None, limit=50)
+
+    async def test_reconnect_recovery_skips_reconcile_and_only_catches_up_topics(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=True)
+        max_client.get_messages = AsyncMock(
+            return_value=[{"max_message_id": "2", "type": "text", "text": "Reconnect catchup"}]
+        )
+        max_client.close = AsyncMock()
+
+        reconcile_user = AsyncMock()
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=3600,
+            reconcile_user=reconcile_user,
+        )
+
+        service._last_catchup_at = time.time()  # type: ignore[reportPrivateUsage]
+
+        await service.poll_user(telegram_user_id=123)
+
+        reconcile_user.assert_not_awaited()
+        repos.topic_repo.find_by_user.assert_awaited_once_with(123)
+
+    async def test_reconnect_recovery_checks_dirty_chat_first_and_skips_broad_scan_when_found(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
+        )
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=True)
+        max_client.get_messages = AsyncMock(
+            return_value=[{"max_message_id": "2", "type": "text", "text": "Reconnect catchup"}]
+        )
+        max_client.close = AsyncMock()
+
+        shared_runtime = MagicMock()
+        shared_runtime.get_client = AsyncMock(return_value=max_client)
+        shared_runtime.get_dirty_chats = AsyncMock(return_value=["chat1"])
+        shared_runtime.get_last_active_chat = AsyncMock(return_value=None)
+        shared_runtime.clear_dirty_chat = AsyncMock()
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=3600,
+            shared_runtime=shared_runtime,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        shared_runtime.get_dirty_chats.assert_awaited_once_with(123)
+        repos.topic_repo.find_by_user.assert_not_awaited()
 
     async def test_poll_chat_no_topic_mapping(self) -> None:
         """No topic for user+chat → nothing to do."""
@@ -190,7 +489,7 @@ class TestInboundSyncService:
         assert repos.telegram.send_text_to_topic.call_count == 2
         assert repos.message_link_repo.save.call_count == 2
         repos.cursor_repo.upsert.assert_called_once()
-        max_client.close.assert_called_once()
+        max_client.close.assert_not_called()
 
     async def test_poll_chat_idempotency_skips_already_delivered(self) -> None:
         """Already-delivered messages are skipped."""
@@ -339,3 +638,26 @@ class TestInboundSyncService:
             }
         )
         assert result == "[Unknown 22.03.26 14:35]\n[unknown]: Unsupported content"
+
+    async def test_render_message_prefers_text_body_when_type_is_unknown(self) -> None:
+        repos = MockRepos()
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        result = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "type": "messagetype.text",
+                "text": "Черновой план",
+                "sender_name": "Аттракционы Ривьера Сочи",
+                "time": int(datetime(2026, 3, 22, 21, 28, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert result == "[Аттракционы Ривьера Сочи 22.03.26 21:28]\nЧерновой план"

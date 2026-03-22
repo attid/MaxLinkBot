@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.application.auth.authorization import AllowlistGate, AuthorizationFlowService
 from src.application.health.service import BackgroundPoller, HealthCheckService
+from src.application.polling.max_runtime import MaxClientRuntimeRegistry
 from src.application.reconcile.service import RefreshReconcileService
 from src.application.routing.outbound import OutboundSyncService
 from src.infrastructure.max.adapter import max_client_factory
@@ -40,7 +41,9 @@ class Settings(BaseSettings):
     allowed_telegram_user_ids: str = ""
     max_work_dir: str = "/data/max_sessions"
     database_url: str = "sqlite+aiosqlite:////data/maxlinkbot.db"
-    poll_interval_seconds: int = 30
+    poll_interval_seconds: float = 1.0
+    health_check_interval_seconds: int = 300
+    catchup_interval_seconds: int = 3600
     backfill_message_count: int = 5
     log_level: str = "INFO"
 
@@ -88,7 +91,9 @@ async def main() -> None:
     audit_repo = SqliteAuditRepository(db)
 
     # MAX client factory
-    max_factory = max_client_factory(settings.max_work_dir)
+    live_max_factory = max_client_factory(settings.max_work_dir, reconnect=True)
+    oneshot_max_factory = max_client_factory(settings.max_work_dir, reconnect=False)
+    shared_max_runtime = MaxClientRuntimeRegistry(live_max_factory)
 
     # Telegram client + bot
     bot = Bot(token=settings.telegram_bot_token)
@@ -101,7 +106,7 @@ async def main() -> None:
     auth_service = AuthorizationFlowService(
         binding_repo=binding_repo,
         audit_repo=audit_repo,
-        max_client_factory=max_factory,
+        max_client_factory=oneshot_max_factory,
         work_dir=settings.max_work_dir,
     )
 
@@ -112,7 +117,7 @@ async def main() -> None:
         cursor_repo=cursor_repo,
         audit_repo=audit_repo,
         telegram_client=tg_client,
-        max_client_factory=max_factory,
+        max_client_factory=oneshot_max_factory,
         backfill_count=settings.backfill_message_count,
     )
 
@@ -121,17 +126,21 @@ async def main() -> None:
         topic_repo=topic_repo,
         message_link_repo=message_link_repo,
         audit_repo=audit_repo,
-        max_client_factory=max_factory,
+        max_client_factory=oneshot_max_factory,
+        shared_runtime=shared_max_runtime,
     )
 
     health_service = HealthCheckService(
         binding_repo=binding_repo,
         audit_repo=audit_repo,
         telegram_client=tg_client,
-        max_client_factory=max_factory,
+        max_client_factory=oneshot_max_factory,
     )
 
     # Inbound factory for background poller
+    async def reconcile_user(telegram_user_id: int) -> None:
+        await reconcile_service.reconcile(telegram_user_id)
+
     def inbound_factory(telegram_user_id: int):
         from src.application.routing.inbound import InboundSyncService
 
@@ -143,7 +152,10 @@ async def main() -> None:
             cursor_repo=cursor_repo,
             audit_repo=audit_repo,
             telegram_client=tg_client,
-            max_client_factory=max_factory,
+            max_client_factory=live_max_factory,
+            catchup_interval_seconds=float(settings.catchup_interval_seconds),
+            reconcile_user=reconcile_user,
+            shared_runtime=shared_max_runtime,
         )
 
     poller = BackgroundPoller(
@@ -151,6 +163,7 @@ async def main() -> None:
         health_service=health_service,
         inbound_factory=inbound_factory,
         poll_interval=float(settings.poll_interval_seconds),
+        health_check_interval=float(settings.health_check_interval_seconds),
     )
 
     # Register Telegram handlers
@@ -164,6 +177,7 @@ async def main() -> None:
     await dp.start_polling(bot)  # type: ignore[reportUnknownMemberType]
 
     await poller.stop()
+    await shared_max_runtime.close_all()
     await bot.session.close()
     await db.close()
     logger.info("Shutdown complete")

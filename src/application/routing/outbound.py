@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 
 from src.application.auth.exceptions import AuthError
+from src.application.polling.max_runtime import MaxClientRuntimeRegistry
 from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
     AuditRepository,
@@ -27,12 +28,14 @@ class OutboundSyncService:
         message_link_repo: MessageLinkRepository,
         audit_repo: AuditRepository,
         max_client_factory: Callable[[int, str], MaxClient],
+        shared_runtime: MaxClientRuntimeRegistry | None = None,
     ) -> None:
         self._binding_repo = binding_repo
         self._topic_repo = topic_repo
         self._message_link_repo = message_link_repo
         self._audit_repo = audit_repo
         self._max_client_factory = max_client_factory
+        self._shared_runtime = shared_runtime
 
     async def deliver(
         self,
@@ -57,9 +60,16 @@ class OutboundSyncService:
         if topic is None:
             raise AuthError("No topic mapping")
 
-        max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+        max_client: MaxClient | None = None
         try:
-            await max_client.start()  # type: ignore[attr-defined]
+            if self._shared_runtime is not None:
+                max_client = await self._shared_runtime.get_client(
+                    binding.telegram_user_id,
+                    binding.max_session_data,
+                )
+            else:
+                max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+                await max_client.start()  # type: ignore[attr-defined]
             max_msg_id = await max_client.send_message(topic.max_chat_id, text)
         except AuthError:
             raise
@@ -71,7 +81,8 @@ class OutboundSyncService:
             )
             raise
         finally:
-            await max_client.close()
+            if max_client is not None and self._shared_runtime is None:
+                await max_client.close()
 
         # Record delivery
         await self._message_link_repo.save(
@@ -84,6 +95,11 @@ class OutboundSyncService:
                 delivered_at=int(time.time()),
             )
         )
+        if self._shared_runtime is not None:
+            await self._shared_runtime.mark_chat_dirty(
+                binding.telegram_user_id,
+                topic.max_chat_id,
+            )
 
         await self._audit_repo.log(
             telegram_user_id,

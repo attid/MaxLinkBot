@@ -85,12 +85,16 @@ class BackgroundPoller:
         health_service: HealthCheckService,
         inbound_factory: Any,  # (telegram_user_id) -> InboundSyncService per-user
         poll_interval: float = 60.0,
+        health_check_interval: float = 300.0,
     ) -> None:
         self._binding_repo = binding_repo
         self._health_service = health_service
         self._inbound_factory = inbound_factory
         self._poll_interval = poll_interval
+        self._health_check_interval = health_check_interval
         self._running = False
+        self._inbound_services: dict[int, Any] = {}
+        self._last_health_check_at: dict[int, float] = {}
 
     async def start(self) -> None:
         """Start the background polling loop. Runs until stop() is called."""
@@ -102,6 +106,11 @@ class BackgroundPoller:
     async def stop(self) -> None:
         """Stop the polling loop after the current iteration."""
         self._running = False
+        for inbound in self._inbound_services.values():
+            close = getattr(inbound, "close", None)
+            if close is not None:
+                await close()
+        self._inbound_services.clear()
 
     async def _poll_once(self) -> None:
         """Poll all active bindings once."""
@@ -113,14 +122,28 @@ class BackgroundPoller:
 
     async def _poll_user(self, telegram_user_id: int) -> None:
         """Poll a single user, handling reauth transitions."""
-        with suppress(Exception):  # non-fatal health check errors
-            await self._health_service.check_and_notify(telegram_user_id)
+        now = time.time()
+        last_health_check_at = self._last_health_check_at.get(telegram_user_id)
+        if last_health_check_at is None or (
+            now - last_health_check_at >= self._health_check_interval
+        ):
+            with suppress(Exception):  # non-fatal health check errors
+                await self._health_service.check_and_notify(telegram_user_id)
+            self._last_health_check_at[telegram_user_id] = now
 
         binding = await self._binding_repo.get(telegram_user_id)
         if binding is None or binding.status != BindingStatus.ACTIVE:
+            inbound = self._inbound_services.pop(telegram_user_id, None)
+            if inbound is not None:
+                close = getattr(inbound, "close", None)
+                if close is not None:
+                    await close()
             return
 
-        inbound = self._inbound_factory(telegram_user_id)
+        inbound = self._inbound_services.get(telegram_user_id)
+        if inbound is None:
+            inbound = self._inbound_factory(telegram_user_id)
+            self._inbound_services[telegram_user_id] = inbound
         try:
             await inbound.poll_user(telegram_user_id)
         except AuthError:

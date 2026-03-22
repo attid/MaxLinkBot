@@ -151,3 +151,81 @@ async def test_resolve_user_display_name_caches_fetch_users_result() -> None:
     assert first == "Roman"
     assert second == "Roman"
     client.fetch_users.assert_awaited_once_with([7])
+
+
+@pytest.mark.asyncio
+async def test_get_messages_filters_since_id_without_dropping_newer_messages() -> None:
+    older = MagicMock()
+    older.id = 40
+    older.text = "older"
+    older.sender = "alice"
+    older.sender_id = 7
+    older.time = 100
+
+    newer = MagicMock()
+    newer.id = 41
+    newer.text = "newer"
+    newer.sender = "alice"
+    newer.sender_id = 7
+    newer.time = 101
+
+    newest = MagicMock()
+    newest.id = 42
+    newest.text = "newest"
+    newest.sender = "alice"
+    newest.sender_id = 7
+    newest.time = 102
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[older, newer, newest])
+    client.get_cached_user = MagicMock(return_value=None)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id="40", limit=50)
+
+    assert [message["max_message_id"] for message in messages] == ["41", "42"]
+
+
+@pytest.mark.asyncio
+async def test_consume_reconnect_event_returns_true_after_second_on_start() -> None:
+    client = MagicMock()
+    client._stop_event = asyncio.Event()  # type: ignore[attr-defined]
+    client.close = AsyncMock()
+
+    on_start_handler: Callable[[], object] | None = None
+
+    def add_on_start_handler(
+        handler: Callable[[], object | Awaitable[object]],
+    ) -> Callable[[], object | Awaitable[object]]:
+        nonlocal on_start_handler
+        on_start_handler = handler
+        return handler
+
+    client.add_on_start_handler.side_effect = add_on_start_handler
+    client.add_message_handler = MagicMock()
+
+    async def start_side_effect() -> None:
+        if on_start_handler is not None:
+            result = on_start_handler()
+            if asyncio.iscoroutine(result):
+                await result
+        await client._stop_event.wait()  # type: ignore[attr-defined]
+
+    client.start = AsyncMock(side_effect=start_side_effect)
+
+    adapter = PymaxAdapter(client)
+
+    await asyncio.wait_for(adapter.start(), timeout=0.5)
+    assert await adapter.consume_reconnect_event() is False
+
+    assert on_start_handler is not None
+    result = on_start_handler()
+    if asyncio.iscoroutine(result):
+        await result
+
+    assert await adapter.consume_reconnect_event() is True
+    assert await adapter.consume_reconnect_event() is False
+
+    await adapter.close()

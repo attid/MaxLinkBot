@@ -160,3 +160,47 @@ class TestOutboundSyncService:
             pass
 
         repos.audit_repo.log.assert_called_once()
+
+    async def test_deliver_uses_shared_runtime_without_closing_client(self) -> None:
+        repos = MockRepos()
+        mock_binding = MagicMock()
+        repos.binding_repo.get = AsyncMock(return_value=mock_binding)
+
+        mock_topic = MagicMock()
+        mock_topic.max_chat_id = "max_chat_abc"
+        repos.topic_repo.get_by_user_and_topic = AsyncMock(return_value=mock_topic)
+
+        repos.message_link_repo.save = AsyncMock()
+        repos.audit_repo.log = AsyncMock()
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.send_message = AsyncMock(return_value="max_msg_xyz")
+        max_client.close = AsyncMock()
+
+        shared_runtime = MagicMock()
+        shared_runtime.get_client = AsyncMock(return_value=max_client)
+        shared_runtime.mark_chat_dirty = AsyncMock()
+
+        service = OutboundSyncService(
+            binding_repo=repos.binding_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            audit_repo=repos.audit_repo,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            shared_runtime=shared_runtime,
+        )
+
+        result = await service.deliver(
+            telegram_user_id=123,
+            telegram_topic_id=50,
+            text="Hello MAX",
+        )
+
+        assert result == "max_msg_xyz"
+        shared_runtime.get_client.assert_awaited_once_with(mock_binding.telegram_user_id, mock_binding.max_session_data)
+        shared_runtime.mark_chat_dirty.assert_awaited_once_with(
+            mock_binding.telegram_user_id,
+            "max_chat_abc",
+        )
+        max_client.start.assert_not_called()
+        max_client.close.assert_not_called()
