@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from collections.abc import Callable
@@ -38,6 +39,7 @@ class RefreshReconcileService:
         telegram_client: TelegramClient,
         max_client_factory: Callable[[int, str], MaxClient],
         backfill_count: int = 5,
+        sleep_func: Callable[[float], object] | None = None,
     ) -> None:
         self._binding_repo = binding_repo
         self._max_chat_repo = max_chat_repo
@@ -47,6 +49,8 @@ class RefreshReconcileService:
         self._telegram = telegram_client
         self._max_client_factory = max_client_factory
         self._backfill_count = backfill_count
+        self._sleep = sleep_func or asyncio.sleep
+        self._topic_ready_retry_delays = (0.3, 1.0, 2.0)
 
     async def reconcile(
         self,
@@ -131,9 +135,23 @@ class RefreshReconcileService:
                         max_chat_id,
                         force_recreate,
                     )
-                    await self._create_topic_with_backfill(
-                        telegram_user_id, max_chat_id, max_client
-                    )
+                    try:
+                        await self._create_topic_with_backfill(
+                            telegram_user_id, max_chat_id, max_client
+                        )
+                    except AuthError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "reconcile create_topic_with_backfill failed telegram_user_id=%s max_chat_id=%s",
+                            telegram_user_id,
+                            max_chat_id,
+                        )
+                        await self._audit_repo.log(
+                            telegram_user_id,
+                            AuditEventType.DELIVERY_FAILED,
+                            f"Reconcile failed for chat {max_chat_id}",
+                        )
                     continue
 
                 logger.info(
@@ -191,10 +209,22 @@ class RefreshReconcileService:
             f"Topic {topic_id} created for chat {max_chat_id}",
         )
 
+        # Telegram private topics can be briefly unavailable right after creation.
+        await self._sleep(self._topic_ready_retry_delays[0])
+
         # Backfill messages
-        await self._backfill(telegram_user_id, max_chat_id, topic_id, max_client)
+        backfill_ok = await self._backfill(telegram_user_id, max_chat_id, topic_id, max_client)
 
         # Save sync cursor after backfill
+        if not backfill_ok:
+            logger.warning(
+                "reconcile cursor skipped after backfill failure telegram_user_id=%s max_chat_id=%s topic_id=%s",
+                telegram_user_id,
+                max_chat_id,
+                topic_id,
+            )
+            return
+
         messages = await max_client.get_messages(
             max_chat_id, since_message_id=None, limit=self._backfill_count
         )
@@ -256,7 +286,7 @@ class RefreshReconcileService:
         max_chat_id: str,
         topic_id: int,
         max_client: MaxClient,
-    ) -> None:
+    ) -> bool:
         """Fetch and deliver last N messages into a topic."""
         try:
             messages = await max_client.get_messages(
@@ -268,14 +298,14 @@ class RefreshReconcileService:
                 telegram_user_id,
                 max_chat_id,
             )
-            return
+            return False
         except Exception:
             logger.exception(
                 "reconcile backfill unexpected error telegram_user_id=%s max_chat_id=%s",
                 telegram_user_id,
                 max_chat_id,
             )
-            raise
+            return False
 
         logger.info(
             "reconcile backfill fetched telegram_user_id=%s max_chat_id=%s count=%s",
@@ -284,6 +314,7 @@ class RefreshReconcileService:
             len(messages),
         )
 
+        all_delivered = True
         for msg in messages:
             logger.info(
                 "reconcile backfill deliver telegram_user_id=%s max_chat_id=%s topic_id=%s message_keys=%s",
@@ -292,11 +323,30 @@ class RefreshReconcileService:
                 topic_id,
                 sorted(msg.keys()),
             )
-            await self._send_backfill_message(
-                telegram_user_id=telegram_user_id,
-                topic_id=topic_id,
-                msg=msg,
-            )
+            try:
+                await self._send_backfill_message(
+                    telegram_user_id=telegram_user_id,
+                    topic_id=topic_id,
+                    msg=msg,
+                )
+            except AuthError:
+                raise
+            except Exception:
+                all_delivered = False
+                logger.exception(
+                    "reconcile backfill message failed telegram_user_id=%s max_chat_id=%s topic_id=%s max_message_id=%s",
+                    telegram_user_id,
+                    max_chat_id,
+                    topic_id,
+                    msg.get("max_message_id"),
+                )
+                await self._audit_repo.log(
+                    telegram_user_id,
+                    AuditEventType.DELIVERY_FAILED,
+                    f"Backfill message failed for chat {max_chat_id} message {msg.get('max_message_id')}",
+                )
+
+        return all_delivered
 
     async def _send_backfill_message(
         self,
@@ -315,11 +365,15 @@ class RefreshReconcileService:
 
         if msg_type in {"photo", "image"} and media_url:
             try:
-                return await self._telegram.send_photo_to_topic(
-                    chat_id=telegram_user_id,
+                return await self._retry_topic_send(
+                    lambda: self._telegram.send_photo_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        photo_url=media_url,
+                        caption=prefix,
+                    ),
+                    telegram_user_id=telegram_user_id,
                     topic_id=topic_id,
-                    photo_url=media_url,
-                    caption=prefix,
                 )
             except TelegramBadRequest as exc:
                 if self._should_fallback_from_media_url(exc):
@@ -331,11 +385,15 @@ class RefreshReconcileService:
                 raise
         if msg_type == "audio" and media_url:
             try:
-                return await self._telegram.send_audio_to_topic(
-                    chat_id=telegram_user_id,
+                return await self._retry_topic_send(
+                    lambda: self._telegram.send_audio_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        audio_url=media_url,
+                        caption=prefix,
+                    ),
+                    telegram_user_id=telegram_user_id,
                     topic_id=topic_id,
-                    audio_url=media_url,
-                    caption=prefix,
                 )
             except TelegramBadRequest as exc:
                 if self._should_fallback_from_media_url(exc):
@@ -347,11 +405,44 @@ class RefreshReconcileService:
                 raise
 
         text = self._render_backfill_message(msg)
-        return await self._telegram.send_text_to_topic(
-            chat_id=telegram_user_id,
+        return await self._retry_topic_send(
+            lambda: self._telegram.send_text_to_topic(
+                chat_id=telegram_user_id,
+                topic_id=topic_id,
+                text=text,
+            ),
+            telegram_user_id=telegram_user_id,
             topic_id=topic_id,
-            text=text,
         )
+
+    async def _retry_topic_send(
+        self,
+        send_call: Callable[[], object],
+        telegram_user_id: int,
+        topic_id: int,
+    ) -> int:
+        last_error: TelegramBadRequest | None = None
+        for attempt, delay in enumerate((0.0, *self._topic_ready_retry_delays), start=1):
+            if delay > 0:
+                await self._sleep(delay)
+            try:
+                result = send_call()
+                if hasattr(result, "__await__"):
+                    return await result  # type: ignore[misc]
+                return result  # type: ignore[return-value]
+            except TelegramBadRequest as exc:
+                if not self._is_message_thread_not_found(exc):
+                    raise
+                last_error = exc
+                logger.warning(
+                    "reconcile topic send retry telegram_user_id=%s topic_id=%s attempt=%s error=%s",
+                    telegram_user_id,
+                    topic_id,
+                    attempt,
+                    exc,
+                )
+        assert last_error is not None
+        raise last_error
 
     def _render_backfill_message(self, msg: dict[str, object]) -> str:
         prefix = self._render_backfill_prefix(msg)
@@ -419,3 +510,6 @@ class RefreshReconcileService:
 
     def _should_fallback_from_media_url(self, exc: TelegramBadRequest) -> bool:
         return "failed to get http url content" in str(exc).lower()
+
+    def _is_message_thread_not_found(self, exc: TelegramBadRequest) -> bool:
+        return "message thread not found" in str(exc).lower()

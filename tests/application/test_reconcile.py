@@ -465,6 +465,207 @@ class TestReconcileService:
             text="[Igor 192875451 22.03.26 22:30]\n[audio]: https://example.com/audio.mp3",
         )
 
+    async def test_backfill_continues_after_single_message_failure(self) -> None:
+        repos = MockRepos()
+        sleep = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(
+            side_effect=[
+                TelegramBadRequest(method=MagicMock(), message="message thread not found"),
+                500,
+                501,
+            ]
+        )
+
+        first = {
+            "max_message_id": "1",
+            "chat_id": "chat1",
+            "type": "text",
+            "text": "first",
+            "sender_name": "Alice",
+            "sender_id": 101,
+            "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+        }
+        second = {
+            "max_message_id": "2",
+            "chat_id": "chat1",
+            "type": "text",
+            "text": "second",
+            "sender_name": "Alice",
+            "sender_id": 101,
+            "time": int(datetime(2026, 3, 22, 22, 31, tzinfo=UTC).timestamp() * 1000),
+        }
+
+        max_client = MagicMock()
+        max_client.get_messages = AsyncMock(return_value=[first, second])
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+            sleep_func=sleep,
+        )
+
+        await service._backfill(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="chat1",
+            topic_id=200,
+            max_client=max_client,
+        )
+
+        assert repos.telegram.send_text_to_topic.await_count == 3
+        sleep.assert_awaited()
+
+    async def test_send_backfill_message_retries_message_thread_not_found(self) -> None:
+        repos = MockRepos()
+        sleep = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(
+            side_effect=[
+                TelegramBadRequest(method=MagicMock(), message="message thread not found"),
+                500,
+            ]
+        )
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+            sleep_func=sleep,
+        )
+
+        result = await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "chat1",
+                "type": "text",
+                "text": "hello",
+                "sender_name": "Alice",
+                "sender_id": 101,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert result == 500
+        assert repos.telegram.send_text_to_topic.await_count == 2
+        sleep.assert_awaited()
+
+    async def test_create_topic_with_backfill_skips_cursor_update_when_backfill_has_failures(self) -> None:
+        repos = MockRepos()
+        sleep = AsyncMock()
+        repos.max_chat_repo.get = AsyncMock(
+            return_value=MaxChat(
+                max_chat_id="chat1",
+                binding_telegram_user_id=123,
+                title="Alice",
+                chat_type=ChatType.PERSONAL,
+            )
+        )
+        repos.topic_repo.save = AsyncMock()
+        repos.audit_repo.log = AsyncMock()
+        repos.telegram.create_topic = AsyncMock(return_value=200)
+        repos.telegram.send_text_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(method=MagicMock(), message="message thread not found")
+        )
+        repos.cursor_repo.upsert = AsyncMock()
+
+        message = {
+            "max_message_id": "1",
+            "chat_id": "chat1",
+            "type": "text",
+            "text": "first",
+            "sender_name": "Alice",
+            "sender_id": 101,
+            "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+        }
+
+        max_client = MagicMock()
+        max_client.get_messages = AsyncMock(return_value=[message])
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+            sleep_func=sleep,
+        )
+
+        await service._create_topic_with_backfill(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="chat1",
+            max_client=max_client,
+        )
+
+        repos.cursor_repo.upsert.assert_not_awaited()
+
+    async def test_reconcile_continues_when_one_chat_create_topic_fails(self) -> None:
+        repos = MockRepos()
+        sleep = AsyncMock()
+        repos.binding_repo.get = AsyncMock()
+        repos.max_chat_repo.save = AsyncMock()
+        repos.topic_repo.find_by_user = AsyncMock(return_value=[])
+        repos.max_chat_repo.get = AsyncMock(
+            side_effect=[
+                MaxChat(
+                    max_chat_id="chat1",
+                    binding_telegram_user_id=123,
+                    title="Alice",
+                    chat_type=ChatType.PERSONAL,
+                ),
+                MaxChat(
+                    max_chat_id="chat2",
+                    binding_telegram_user_id=123,
+                    title="Bob",
+                    chat_type=ChatType.PERSONAL,
+                ),
+            ]
+        )
+        repos.topic_repo.save = AsyncMock()
+        repos.audit_repo.log = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.create_topic = AsyncMock(side_effect=[RuntimeError("boom"), 201])
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=500)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(
+            return_value=[
+                {"max_chat_id": "chat1", "title": "Alice", "participant_ids": ["1", "101"]},
+                {"max_chat_id": "chat2", "title": "Bob", "participant_ids": ["1", "202"]},
+            ]
+        )
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            backfill_count=5,
+            sleep_func=sleep,
+        )
+
+        await service.reconcile(telegram_user_id=123)
+
+        assert repos.telegram.create_topic.await_count == 2
+        repos.topic_repo.save.assert_awaited()
+
     async def test_reconcile_uses_fallback_title_for_empty_chat_name(self) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock()
