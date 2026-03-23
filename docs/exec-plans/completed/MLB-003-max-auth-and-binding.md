@@ -1,5 +1,10 @@
 # MLB-003: MAX Authorization And Binding Lifecycle
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+Binding lifecycle, allowlist, reauth-path и MAX authorization flow уже реализованы в application/infrastructure слоях.
+
 ## Контекст
 
 Без устойчивого сценария авторизации система не сможет безопасно обслуживать нескольких пользователей. Нужно изолированно провести каждого разрешенного Telegram-пользователя через привязку его MAX-аккаунта.

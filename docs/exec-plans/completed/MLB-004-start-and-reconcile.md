@@ -1,5 +1,10 @@
 # MLB-004: Start Command And Reconcile
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+`/start`, `RefreshReconcileService`, создание topics и backfill уже реализованы; последующие runtime-фиксы вынесены в отдельный completed plan `MLB-011`.
+
 ## Контекст
 
 `/start` в первой версии это главный orchestration entrypoint. Он должен уметь либо запустить авторизацию, либо полностью сверить состояние MAX и Telegram для уже привязанного пользователя.

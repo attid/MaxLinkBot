@@ -1,5 +1,10 @@
 # MLB-007: Background Health, Reauth And Audit
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+Background polling, health checks, `reauth_required` transitions и audit logging уже реализованы; дальнейшая стабилизация live/catch-up вынесена в `MLB-013`.
+
 ## Контекст
 
 Шлюз должен работать фоново, но не бесконечно опрашивать протухшие MAX-сессии. Нужна отдельная логика health-check, остановки poller и сервисных уведомлений.

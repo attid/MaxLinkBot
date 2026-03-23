@@ -1,5 +1,10 @@
 # MLB-009: Telegram auth flow — no-commands wizard
 
+## Статус
+
+Ретроспективно помечено как superseded и выполненное в другой форме.
+Изначальный phone/SMS wizard был заменён рабочим QR/session flow, но итоговая цель задачи — не-командный auth flow для пользователя — закрыта текущим `/start`-сценарием.
+
 ## Контекст
 
 После миграции на `maxapi-python` (MLB-008) auth flow не был реализован. Бот отвечал "To get started, I need to link your MAX account" но не вёл пользователя дальше. Пользователь не должен помнить команды — бот должен вести через flow сам.

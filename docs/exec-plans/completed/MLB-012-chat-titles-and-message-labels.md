@@ -1,5 +1,10 @@
 # MLB-012: Human-Readable Chat Titles And Message Labels
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+План был расширен по ходу реальной диагностики и в итоге покрыл titles, labels, `/resync`, sender IDs, media fallbacks, targeted resync и outbound photo path.
+
 ## Контекст
 
 После стабилизации `/start` и `reconcile` topics начали создаваться, но UX остается слабым:
@@ -16,31 +21,31 @@
 
 ## План изменений
 
-1. [ ] Через `local_max_test.py` и/или локальную диагностику проверить, какие поля `pymax` возвращает для chat title, peer/user name и метаданных сообщения.
-2. [ ] Зафиксировать минимальный формат отображаемого названия topic:
+1. [x] Через `local_max_test.py` и/или локальную диагностику проверить, какие поля `pymax` возвращает для chat title, peer/user name и метаданных сообщения.
+2. [x] Зафиксировать минимальный формат отображаемого названия topic:
    приоритетно использовать человеческое имя/название чата, fallback оставить только последним вариантом.
-3. [ ] Зафиксировать формат входящего сообщения для Telegram topics:
+3. [x] Зафиксировать формат входящего сообщения для Telegram topics:
    `[Имя DD.MM.YY HH:MM] текст`
-4. [ ] Добавить/обновить unit-тесты для title resolution и inbound message rendering.
-5. [ ] Реализовать минимальные изменения в `src/infrastructure/max/adapter.py`, `src/application/reconcile/service.py` и/или `src/application/routing/inbound.py`.
-6. [ ] Изменить reconcile semantics:
+4. [x] Добавить/обновить unit-тесты для title resolution и inbound message rendering.
+5. [x] Реализовать минимальные изменения в `src/infrastructure/max/adapter.py`, `src/application/reconcile/service.py` и/или `src/application/routing/inbound.py`.
+6. [x] Изменить reconcile semantics:
    `/start` только создает отсутствующие mappings, а отдельная команда `/resync` пересоздает все topics заново.
-7. [ ] Добавить меню-команду `/resync` и handler для полного rebuild topics.
-8. [ ] Обновить docs, если после проверки появится важный новый контракт `maxapi-python`.
-9. [ ] Прогнать целевые тесты и ручную локальную проверку через Docker или `local_max_test.py`.
-10. [ ] Добавить regression-test на фильтрацию `fetch_history()` по `since_message_id` для inbound polling.
-11. [ ] Исправить root cause в `src/infrastructure/max/adapter.py`, если порядок history действительно ломает текущую фильтрацию.
-12. [ ] Обновить docs/контракт `pymax`, если подтвердится важное поведение порядка сообщений в history.
-13. [ ] Уточнить и исправить рендеринг media-сообщений из MAX:
+7. [x] Добавить меню-команду `/resync` и handler для полного rebuild topics.
+8. [x] Обновить docs, если после проверки появится важный новый контракт `maxapi-python`.
+9. [x] Прогнать целевые тесты и ручную локальную проверку через Docker или `local_max_test.py`.
+10. [x] Добавить regression-test на фильтрацию `fetch_history()` по `since_message_id` для inbound polling.
+11. [x] Исправить root cause в `src/infrastructure/max/adapter.py`, если порядок history действительно ломает текущую фильтрацию.
+12. [x] Обновить docs/контракт `pymax`, если подтвердится важное поведение порядка сообщений в history.
+13. [x] Уточнить и исправить рендеринг media-сообщений из MAX:
     картинка не должна приходить как `[unknown]: Unsupported content`, если `pymax` даёт различимый media type или metadata.
-14. [ ] Отфильтровать service/live events, которые не являются пользовательскими сообщениями
+14. [x] Отфильтровать service/live events, которые не являются пользовательскими сообщениями
     (например, `type=USER`, `chat_id=0`), и убрать crash на `sender_name=int`.
-15. [ ] Добавить sender ID в message prefix, чтобы входящие сообщения можно было однозначно сопоставлять с MAX user.
-16. [ ] Расширить `/resync` optional параметром `max_chat_id`, чтобы можно было пересоздавать один конкретный чат без полного rebuild.
-17. [ ] Для self-chat/history media (`msg.attaches`) перейти от generic placeholder к реальной доставке хотя бы `photo` и `audio`, если `pymax` отдаёт прямой URL.
-18. [ ] Для audio download из MAX CDN учитывать `srcAg` и использовать совместимые browser headers, иначе `okcdn` может отвечать `400` даже на ещё не истекший URL.
-19. [ ] Привести `/resync <id>` к формату пользовательских префиксов: если в сообщении показывается `sender_id`, команда должна уметь резолвить его в соответствующий dialog `max_chat_id` или давать явную ошибку об ambiguity.
-20. [ ] Добавить outbound photo path `Telegram topic -> MAX`, чтобы изображения, отправленные в topic, не терялись молча и доставлялись в MAX как photo attachment.
+15. [x] Добавить sender ID в message prefix, чтобы входящие сообщения можно было однозначно сопоставлять с MAX user.
+16. [x] Расширить `/resync` optional параметром `max_chat_id`, чтобы можно было пересоздавать один конкретный чат без полного rebuild.
+17. [x] Для self-chat/history media (`msg.attaches`) перейти от generic placeholder к реальной доставке хотя бы `photo` и `audio`, если `pymax` отдаёт прямой URL.
+18. [x] Для audio download из MAX CDN учитывать `srcAg` и использовать совместимые browser headers, иначе `okcdn` может отвечать `400` даже на ещё не истекший URL.
+19. [x] Привести `/resync <id>` к формату пользовательских префиксов: если в сообщении показывается `sender_id`, команда должна уметь резолвить его в соответствующий dialog `max_chat_id` или давать явную ошибку об ambiguity.
+20. [x] Добавить outbound photo path `Telegram topic -> MAX`, чтобы изображения, отправленные в topic, не терялись молча и доставлялись в MAX как photo attachment.
 
 ## Риски и открытые вопросы
 

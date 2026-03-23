@@ -1,5 +1,10 @@
 # MLB-010: maxapi-python WebSocket auth — QR код через Telegram
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+QR auth через Telegram, session restore и последующая работа поверх `maxapi-python` WebSocket уже реализованы; дополнительные runtime-фиксы были оформлены отдельно.
+
 ## Контекст
 
 При отправке телефона бот ответил "Failed to send code: WebSocket is not connected".

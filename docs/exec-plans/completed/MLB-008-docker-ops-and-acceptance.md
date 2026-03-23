@@ -1,5 +1,10 @@
 # MLB-008: Docker, Ops And Acceptance
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+Docker-setup, documented runtime config, README/runbooks и базовый acceptance path уже присутствуют в репозитории.
+
 ## Контекст
 
 После сборки функционала нужен эксплуатационный слой: контейнерный запуск, конфиг, базовые runbooks и приемочная проверка end-to-end.

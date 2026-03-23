@@ -1,5 +1,10 @@
 # MLB-013: Event-Driven Inbound Sync With Hourly Catch-Up
 
+## Статус
+
+Ретроспективно помечено как выполненное.
+Текущий runtime уже использует shared live MAX client, event-driven inbound drain, reconnect recovery и редкий catch-up вместо постоянного full polling.
+
 ## Контекст
 
 Текущая доставка `MAX -> Telegram` опирается на регулярный polling `fetch_history()` по всем чатам каждого активного binding.
@@ -16,32 +21,32 @@
 
 ## План изменений
 
-1. [ ] Зафиксировать новый runtime-контракт inbound sync:
+1. [x] Зафиксировать новый runtime-контракт inbound sync:
    live delivery через message handler, catch-up polling только как fallback.
-2. [ ] Расширить MAX client port минимальным API для чтения buffered live messages из долгоживущего adapter.
-3. [ ] Обновить `PymaxAdapter`, чтобы он:
+2. [x] Расширить MAX client port минимальным API для чтения buffered live messages из долгоживущего adapter.
+3. [x] Обновить `PymaxAdapter`, чтобы он:
    - накапливал live messages в буфере;
    - отдавал их через явный `drain_*` метод;
    - сохранял достаточные поля сообщения для Telegram rendering и cursor update.
-4. [ ] Переписать `InboundSyncService` на долгоживущую модель:
+4. [x] Переписать `InboundSyncService` на долгоживущую модель:
    - один живой MAX client на binding;
    - `ensure_started()` / lazy start;
    - отдельный путь обработки live buffered messages без `fetch_history()` по всем чатам на каждом цикле.
-5. [ ] Добавить explicit catch-up path для existing topics:
+5. [x] Добавить explicit catch-up path для existing topics:
    редкий проход по cursor/history для already-known chats, без постоянного minute-by-minute polling.
-6. [ ] Обновить `BackgroundPoller`:
+6. [x] Обновить `BackgroundPoller`:
    - frequent lightweight loop только для draining live buffers;
    - health check и catch-up/reconcile по расписанию с отдельным редким интервалом;
    - reuse `InboundSyncService` instances между тиками вместо создания нового service/client каждый раз.
-7. [ ] Решить обнаружение новых MAX chats:
+7. [x] Решить обнаружение новых MAX chats:
    использовать редкий `reconcile` как discovery-механизм для missing topics, чтобы не делать `fetch_chats()` на каждом live-цикле.
-8. [ ] Добавить/обновить unit tests:
+8. [x] Добавить/обновить unit tests:
    - live buffered messages deliver without history polling;
    - hourly catch-up still fetches missed messages by cursor;
    - background poller reuses inbound service/client and does not hit history on every tick.
-9. [ ] Обновить docs/контракт `pymax`, если новая модель подтвердит дополнительные инварианты.
-10. [ ] Прогнать релевантный pytest suite и ручную проверку в Docker.
-11. [ ] Защитить startup/runtime от удалённой on-disk MAX session:
+9. [x] Обновить docs/контракт `pymax`, если новая модель подтвердит дополнительные инварианты.
+10. [x] Прогнать релевантный pytest suite и ручную проверку в Docker.
+11. [x] Защитить startup/runtime от удалённой on-disk MAX session:
     background `start()` должен падать контролируемым `AuthError`, а не уходить в QR login flow.
 
 ## Риски и открытые вопросы
