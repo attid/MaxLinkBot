@@ -12,6 +12,7 @@ import io
 import logging
 import os
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from typing import Any
 
 import qrcode
 from pymax import MaxClient
+from pymax.files import Photo
 from pymax.payloads import UserAgentPayload
 
 from src.application.auth.exceptions import AuthError
@@ -73,6 +75,8 @@ class PymaxAdapter(MaxClientPort):
         chats = []
         for chat in raw:
             title = await self._resolve_chat_title(chat)
+            participants = getattr(chat, "participants", {}) or {}
+            participant_ids = [str(uid) for uid in participants.keys()]
             logger.info(
                 "max resolved chat title chat_id=%s chat_type=%r raw_title=%r owner=%r participants=%r resolved_title=%r",
                 getattr(chat, "id", None),
@@ -82,7 +86,13 @@ class PymaxAdapter(MaxClientPort):
                 list((getattr(chat, "participants", {}) or {}).keys()),
                 title,
             )
-            chats.append({"max_chat_id": str(chat.id), "title": title})
+            chats.append(
+                {
+                    "max_chat_id": str(chat.id),
+                    "title": title,
+                    "participant_ids": participant_ids,
+                }
+            )
         logger.info(
             "max list_personal_chats fetched count=%s ids=%s",
             len(chats),
@@ -111,14 +121,25 @@ class PymaxAdapter(MaxClientPort):
             raw_ids.append(str(m.id))
             if since is not None and mid <= since:
                 continue
+            sender_id = self._extract_sender_id(m)
+            media_type, media_url = self._extract_media_metadata(m)
+            raw_description = getattr(m, "description", None)
+            description = raw_description.strip() if isinstance(raw_description, str) else ""
             result.append(
                 {
                     "max_message_id": str(m.id),
                     "chat_id": max_chat_id,
                     "text": getattr(m, "text", None) or "",
-                    "sender_id": getattr(m, "sender_id", None) or 0,
+                    "sender_id": sender_id,
                     "sender_name": await self._resolve_sender_name(m),
                     "time": getattr(m, "time", None) or 0,
+                    "type": media_type
+                    or self._normalize_live_message_type(
+                        getattr(m, "type", None),
+                        getattr(m, "text", None),
+                    ),
+                    "description": description,
+                    "media_url": media_url,
                 }
             )
         logger.info(
@@ -171,9 +192,7 @@ class PymaxAdapter(MaxClientPort):
         if isinstance(sender, str):
             return sender
 
-        sender_id = sender
-        if sender_id is None:
-            sender_id = getattr(message, "sender_id", None)
+        sender_id = self._extract_sender_id(message)
         if sender_id is None:
             return ""
 
@@ -182,6 +201,50 @@ class PymaxAdapter(MaxClientPort):
             return display_name
 
         return str(sender_id)
+
+    def _extract_sender_id(self, message: Any) -> int:
+        sender_id = getattr(message, "sender_id", None)
+        if not isinstance(sender_id, (int, str)):
+            sender_id = getattr(message, "sender", None)
+        if sender_id is None:
+            return 0
+        if isinstance(sender_id, str) and not sender_id.strip().lstrip("-").isdigit():
+            return 0
+        try:
+            return int(sender_id)
+        except (TypeError, ValueError):
+            return 0
+
+    def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None]:
+        attaches = getattr(message, "attaches", None)
+        if not isinstance(attaches, (list, tuple)):
+            attaches = []
+        for attach in attaches:
+            attach_type = getattr(attach, "type", None)
+            type_name = ""
+            if isinstance(attach_type, str):
+                type_name = attach_type.strip().lower()
+            else:
+                name = getattr(attach_type, "name", None)
+                value = getattr(attach_type, "value", None)
+                if isinstance(name, str):
+                    type_name = name.strip().lower()
+                elif isinstance(value, str):
+                    type_name = value.strip().lower()
+
+            if type_name == "photo":
+                base_url = getattr(attach, "base_url", None)
+                if isinstance(base_url, str) and base_url.strip():
+                    return "photo", base_url.strip()
+            if type_name in {"audio", "voice"}:
+                url = getattr(attach, "url", None)
+                if isinstance(url, str) and url.strip():
+                    return "audio", url.strip()
+            if type_name == "video":
+                url = getattr(attach, "url", None)
+                if isinstance(url, str) and url.strip():
+                    return "video", url.strip()
+        return None, None
 
     async def _resolve_user_display_name(self, user_id: int) -> str | None:
         cached = self._user_cache.get(user_id)
@@ -243,6 +306,36 @@ class PymaxAdapter(MaxClientPort):
     async def send_message(self, max_chat_id: str, text: str) -> str:
         msg = await self._client.send_message(text=text, chat_id=int(max_chat_id))
         return str(msg.id) if msg else ""
+
+    async def send_photo(
+        self,
+        max_chat_id: str,
+        image_bytes: bytes,
+        filename: str,
+        caption: str,
+    ) -> str:
+        suffix = self._normalize_photo_suffix(filename)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(image_bytes)
+                temp_path = Path(temp_file.name)
+
+            msg = await self._client.send_message(
+                text=caption,
+                chat_id=int(max_chat_id),
+                attachment=Photo(path=str(temp_path)),
+            )
+            return str(msg.id) if msg else ""
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+    def _normalize_photo_suffix(self, filename: str) -> str:
+        suffix = Path(filename).suffix.lower()
+        if suffix in Photo.ALLOWED_EXTENSIONS:
+            return suffix
+        return ".jpg"
 
     async def drain_buffered_messages(self) -> list[dict[str, Any]]:
         async with self._lock:

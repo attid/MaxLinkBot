@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+from pathlib import Path
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -104,11 +106,37 @@ def register_handlers(
             await message.answer("MAX session invalid. Send /start to authorize first.")
             return
 
+        raw_text = (message.text or "").strip()
+        parts = raw_text.split(maxsplit=1)
+        target_max_chat_id = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+
         try:
-            logger.info("/resync running full rebuild telegram_user_id=%s", telegram_user_id)
-            await reconcile_service.reconcile(telegram_user_id, force_recreate=True)
-            logger.info("/resync finished telegram_user_id=%s", telegram_user_id)
-            await message.answer("Full topic rebuild complete.")
+            logger.info(
+                "/resync running telegram_user_id=%s target_max_chat_id=%s",
+                telegram_user_id,
+                target_max_chat_id,
+            )
+            await reconcile_service.reconcile(
+                telegram_user_id,
+                force_recreate=True,
+                target_max_chat_id=target_max_chat_id,
+            )
+            logger.info(
+                "/resync finished telegram_user_id=%s target_max_chat_id=%s",
+                telegram_user_id,
+                target_max_chat_id,
+            )
+            if target_max_chat_id is None:
+                await message.answer("Full topic rebuild complete.")
+            else:
+                await message.answer(f"Topic rebuild complete for MAX chat {target_max_chat_id}.")
+        except ValueError as exc:
+            logger.exception(
+                "/resync invalid target telegram_user_id=%s target_max_chat_id=%s",
+                telegram_user_id,
+                target_max_chat_id,
+            )
+            await message.answer(str(exc))
         except AuthError:
             logger.exception("/resync auth error telegram_user_id=%s", telegram_user_id)
             await message.answer("MAX session expired. Send /start to re-authorize.")
@@ -125,12 +153,30 @@ def register_handlers(
         telegram_user_id = message.from_user.id
         if not allowlist_gate.is_allowed(telegram_user_id):
             return
-        text = message.text
-        if not text:
-            return
 
         # Topic message → deliver to MAX
         if message.message_thread_id:
+            if message.photo:
+                largest_photo = message.photo[-1]
+                file = await message.bot.get_file(largest_photo.file_id)
+                buffer = io.BytesIO()
+                await message.bot.download_file(file.file_path, destination=buffer)
+                filename = Path(file.file_path or largest_photo.file_id).name or f"{largest_photo.file_id}.jpg"
+                try:
+                    await outbound_service.deliver_photo(
+                        telegram_user_id=telegram_user_id,
+                        telegram_topic_id=message.message_thread_id or 0,
+                        image_bytes=buffer.getvalue(),
+                        filename=filename,
+                        caption=message.caption or "",
+                    )
+                except AuthError:
+                    await message.answer("MAX session invalid. Send /start to re-authorize.")
+                return
+
+            text = message.text
+            if not text:
+                return
             try:
                 await outbound_service.deliver(
                     telegram_user_id=telegram_user_id,
@@ -142,4 +188,7 @@ def register_handlers(
             return
 
         # Plain text in main chat
-        await message.answer("Send /start to sync chats or /resync to rebuild topics.")
+        text = message.text
+        if not text:
+            return
+        await message.answer("Send /start to sync chats or /resync [max_chat_id] to rebuild topics.")

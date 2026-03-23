@@ -31,6 +31,16 @@
 10. [ ] Добавить regression-test на фильтрацию `fetch_history()` по `since_message_id` для inbound polling.
 11. [ ] Исправить root cause в `src/infrastructure/max/adapter.py`, если порядок history действительно ломает текущую фильтрацию.
 12. [ ] Обновить docs/контракт `pymax`, если подтвердится важное поведение порядка сообщений в history.
+13. [ ] Уточнить и исправить рендеринг media-сообщений из MAX:
+    картинка не должна приходить как `[unknown]: Unsupported content`, если `pymax` даёт различимый media type или metadata.
+14. [ ] Отфильтровать service/live events, которые не являются пользовательскими сообщениями
+    (например, `type=USER`, `chat_id=0`), и убрать crash на `sender_name=int`.
+15. [ ] Добавить sender ID в message prefix, чтобы входящие сообщения можно было однозначно сопоставлять с MAX user.
+16. [ ] Расширить `/resync` optional параметром `max_chat_id`, чтобы можно было пересоздавать один конкретный чат без полного rebuild.
+17. [ ] Для self-chat/history media (`msg.attaches`) перейти от generic placeholder к реальной доставке хотя бы `photo` и `audio`, если `pymax` отдаёт прямой URL.
+18. [ ] Для audio download из MAX CDN учитывать `srcAg` и использовать совместимые browser headers, иначе `okcdn` может отвечать `400` даже на ещё не истекший URL.
+19. [ ] Привести `/resync <id>` к формату пользовательских префиксов: если в сообщении показывается `sender_id`, команда должна уметь резолвить его в соответствующий dialog `max_chat_id` или давать явную ошибку об ambiguity.
+20. [ ] Добавить outbound photo path `Telegram topic -> MAX`, чтобы изображения, отправленные в topic, не терялись молча и доставлялись в MAX как photo attachment.
 
 ## Риски и открытые вопросы
 
@@ -39,6 +49,9 @@
 - Важно не сломать существующий backfill и cursor update при изменении структуры message dict.
 - Полный rebuild topics через `/resync` может создавать новые topics поверх старых живых, если пользователь не удалил их вручную; это допустимый компромисс ради предсказуемого восстановления.
 - Если вывод про порядок `fetch_history()` окажется неверным, понадобится повторная диагностика с логированием сырых `message_id` до следующего fix.
+- `pymax` может отдавать media-сообщения с нестабильным `type`/`description`, поэтому сначала нужна локальная диагностика сырых полей хотя бы для картинки.
+- Для audio из self-chat `okcdn` URL может зависеть от `srcAg` и не скачиваться дефолтным Python HTTP client без browser-like headers.
+- `pymax` photo upload использует file-based attachment contract; для Telegram photo outbound может понадобиться временный файл, а не raw bytes.
 
 ## Верификация
 

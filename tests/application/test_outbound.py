@@ -204,3 +204,49 @@ class TestOutboundSyncService:
         )
         max_client.start.assert_not_called()
         max_client.close.assert_not_called()
+
+    async def test_deliver_photo_success_sends_and_records(self) -> None:
+        repos = MockRepos()
+        mock_binding = MagicMock()
+        repos.binding_repo.get = AsyncMock(return_value=mock_binding)
+
+        mock_topic = MagicMock()
+        mock_topic.max_chat_id = "max_chat_abc"
+        repos.topic_repo.get_by_user_and_topic = AsyncMock(return_value=mock_topic)
+
+        repos.message_link_repo.save = AsyncMock()
+        repos.audit_repo.log = AsyncMock()
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.send_photo = AsyncMock(return_value="max_msg_photo")
+        max_client.close = AsyncMock()
+
+        def factory(_uid: int, _phone: str) -> MagicMock:
+            return max_client
+
+        service = OutboundSyncService(
+            binding_repo=repos.binding_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            audit_repo=repos.audit_repo,
+            max_client_factory=factory,
+        )
+
+        result = await service.deliver_photo(
+            telegram_user_id=123,
+            telegram_topic_id=50,
+            image_bytes=b"image-bytes",
+            filename="telegram-photo.jpg",
+            caption="Photo caption",
+        )
+
+        assert result == "max_msg_photo"
+        max_client.send_photo.assert_called_once_with(
+            "max_chat_abc",
+            b"image-bytes",
+            "telegram-photo.jpg",
+            "Photo caption",
+        )
+        max_client.close.assert_called_once()
+        repos.message_link_repo.save.assert_called_once()
+        repos.audit_repo.log.assert_called_once()

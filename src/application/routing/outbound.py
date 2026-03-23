@@ -37,6 +37,21 @@ class OutboundSyncService:
         self._max_client_factory = max_client_factory
         self._shared_runtime = shared_runtime
 
+    async def _resolve_binding_and_topic(
+        self,
+        telegram_user_id: int,
+        telegram_topic_id: int,
+    ) -> tuple[object, object]:
+        binding = await self._binding_repo.get(telegram_user_id)
+        if binding is None:
+            raise AuthError("No binding for user")
+
+        topic = await self._topic_repo.get_by_user_and_topic(telegram_user_id, telegram_topic_id)
+        if topic is None:
+            raise AuthError("No topic mapping")
+
+        return binding, topic
+
     async def deliver(
         self,
         telegram_user_id: int,
@@ -52,13 +67,7 @@ class OutboundSyncService:
         Raises:
             AuthError: if the user's MAX session is invalid.
         """
-        binding = await self._binding_repo.get(telegram_user_id)
-        if binding is None:
-            raise AuthError("No binding for user")
-
-        topic = await self._topic_repo.get_by_user_and_topic(telegram_user_id, telegram_topic_id)
-        if topic is None:
-            raise AuthError("No topic mapping")
+        binding, topic = await self._resolve_binding_and_topic(telegram_user_id, telegram_topic_id)
 
         max_client: MaxClient | None = None
         try:
@@ -105,6 +114,70 @@ class OutboundSyncService:
             telegram_user_id,
             AuditEventType.DELIVERY_SUCCESS,
             f"Outbound delivered to {topic.max_chat_id}",
+        )
+
+        return max_msg_id
+
+    async def deliver_photo(
+        self,
+        telegram_user_id: int,
+        telegram_topic_id: int,
+        image_bytes: bytes,
+        filename: str,
+        caption: str = "",
+    ) -> str:
+        """Deliver a Telegram topic photo to its mapped MAX chat."""
+        binding, topic = await self._resolve_binding_and_topic(telegram_user_id, telegram_topic_id)
+
+        max_client: MaxClient | None = None
+        try:
+            if self._shared_runtime is not None:
+                max_client = await self._shared_runtime.get_client(
+                    binding.telegram_user_id,
+                    binding.max_session_data,
+                )
+            else:
+                max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+                await max_client.start()  # type: ignore[attr-defined]
+            max_msg_id = await max_client.send_photo(
+                topic.max_chat_id,
+                image_bytes,
+                filename,
+                caption,
+            )
+        except AuthError:
+            raise
+        except Exception as exc:
+            await self._audit_repo.log(
+                telegram_user_id,
+                AuditEventType.DELIVERY_FAILED,
+                f"Outbound photo delivery failed: {exc}",
+            )
+            raise
+        finally:
+            if max_client is not None and self._shared_runtime is None:
+                await max_client.close()
+
+        await self._message_link_repo.save(
+            MessageLink(
+                max_message_id=max_msg_id,
+                telegram_message_id=None,
+                telegram_user_id=telegram_user_id,
+                max_chat_id=topic.max_chat_id,
+                direction=Direction.TELEGRAM_TO_MAX,
+                delivered_at=int(time.time()),
+            )
+        )
+        if self._shared_runtime is not None:
+            await self._shared_runtime.mark_chat_dirty(
+                binding.telegram_user_id,
+                topic.max_chat_id,
+            )
+
+        await self._audit_repo.log(
+            telegram_user_id,
+            AuditEventType.DELIVERY_SUCCESS,
+            f"Outbound photo delivered to {topic.max_chat_id}",
         )
 
         return max_msg_id

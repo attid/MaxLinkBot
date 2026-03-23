@@ -76,6 +76,21 @@ class MaxClient(ABC):
         ...
 
     @abstractmethod
+    async def send_photo(
+        self,
+        max_chat_id: str,
+        image_bytes: bytes,
+        filename: str,
+        caption: str,
+    ) -> str:
+        """Send a photo message to a MAX chat.
+
+        Returns:
+            The sent message's MAX message ID.
+        """
+        ...
+
+    @abstractmethod
     async def create_topic(self, title: str) -> str:
         """Create a new personal MAX chat and return its max_chat_id."""
         ...

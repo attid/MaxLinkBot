@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -80,6 +81,9 @@ async def test_get_messages_returns_max_message_id_key() -> None:
             "sender_id": 7,
             "sender_name": "alice",
             "time": 123,
+            "type": "text",
+            "description": "",
+            "media_url": None,
         }
     ]
 
@@ -106,7 +110,7 @@ async def test_list_personal_chats_uses_other_participant_name_for_dialog_title(
 
     chats = await adapter.list_personal_chats()
 
-    assert chats == [{"max_chat_id": "100", "title": "Vasya"}]
+    assert chats == [{"max_chat_id": "100", "title": "Vasya", "participant_ids": ["1", "2"]}]
     client.fetch_users.assert_not_called()
 
 
@@ -132,6 +136,149 @@ async def test_get_messages_uses_cached_sender_name_when_available() -> None:
     messages = await adapter.get_messages("100", since_message_id=None, limit=5)
 
     assert messages[0]["sender_name"] == "Petya"
+    assert messages[0]["sender_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_get_messages_falls_back_to_sender_field_for_sender_id() -> None:
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = "hello"
+    raw_message.sender = 147493423
+    raw_message.sender_id = None
+    raw_message.time = 123
+
+    user = SimpleNamespace(
+        names=[SimpleNamespace(name="Виктор Григорьевич", first_name="Виктор", last_name="Григорьевич")]
+    )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["sender_id"] == 147493423
+    assert messages[0]["sender_name"] == "Виктор Григорьевич"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_includes_type_and_description_from_history() -> None:
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = ""
+    raw_message.sender = "alice"
+    raw_message.sender_id = 7
+    raw_message.time = 123
+    raw_message.type = "image"
+    raw_message.description = "Sunset photo"
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=None)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "image"
+    assert messages[0]["description"] == "Sunset photo"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_extracts_photo_attach_url_from_history() -> None:
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = ""
+    raw_message.sender = 7
+    raw_message.sender_id = None
+    raw_message.time = 123
+    raw_message.type = "USER"
+    raw_message.description = None
+    raw_message.attaches = [
+        SimpleNamespace(
+            type=SimpleNamespace(name="PHOTO", value="PHOTO"),
+            base_url="https://example.com/image.jpg",
+        )
+    ]
+
+    user = SimpleNamespace(
+        names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")]
+    )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "photo"
+    assert messages[0]["media_url"] == "https://example.com/image.jpg"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_extracts_audio_attach_url_from_history() -> None:
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = ""
+    raw_message.sender = 7
+    raw_message.sender_id = None
+    raw_message.time = 123
+    raw_message.type = "USER"
+    raw_message.description = None
+    raw_message.attaches = [
+        SimpleNamespace(
+            type=SimpleNamespace(name="AUDIO", value="AUDIO"),
+            url="https://example.com/audio.mp3",
+        )
+    ]
+
+    user = SimpleNamespace(
+        names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")]
+    )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "audio"
+    assert messages[0]["media_url"] == "https://example.com/audio.mp3"
+
+
+@pytest.mark.asyncio
+async def test_send_photo_uses_temp_file_attachment() -> None:
+    sent_message = SimpleNamespace(id=99)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=sent_message)
+
+    adapter = PymaxAdapter(client)
+
+    result = await adapter.send_photo(
+        "100",
+        b"image-bytes",
+        "telegram-image.png",
+        "Caption",
+    )
+
+    assert result == "99"
+    send_call = client.send_message.await_args
+    assert send_call.kwargs["text"] == "Caption"
+    assert send_call.kwargs["chat_id"] == 100
+    attachment = send_call.kwargs["attachment"]
+    assert attachment.file_name.endswith(".png")
+    assert not os.path.exists(attachment.path)
 
 
 @pytest.mark.asyncio
