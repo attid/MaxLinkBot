@@ -25,6 +25,28 @@ class TelegramClient(ABC):
         ...
 
     @abstractmethod
+    async def send_photo_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        photo_url: str,
+        caption: str,
+    ) -> int:
+        """Send a photo to a specific topic."""
+        ...
+
+    @abstractmethod
+    async def send_audio_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        audio_url: str,
+        caption: str,
+    ) -> int:
+        """Send an audio file to a specific topic."""
+        ...
+
+    @abstractmethod
     async def create_topic(self, chat_id: int, title: str) -> int:
         """Create a new topic in a chat.
 

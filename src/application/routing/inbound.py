@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from collections.abc import Callable
 from typing import Any
 
+from aiogram.exceptions import TelegramBadRequest
+
 from src.application.auth.exceptions import AuthError
 from src.application.polling.max_runtime import MaxClientRuntimeRegistry
 from src.application.ports.clients import MaxClient
@@ -180,6 +182,9 @@ class InboundSyncService:
         return delivered_any
 
     async def _process_live_message(self, telegram_user_id: int, msg: dict[str, Any]) -> None:
+        if self._should_ignore_live_message(msg):
+            return
+
         max_chat_id = str(msg["chat_id"])
         topic = await self._topic_repo.get_by_user_and_chat(telegram_user_id, max_chat_id)
         if topic is None:
@@ -261,12 +266,11 @@ class InboundSyncService:
         if await self._message_link_repo.exists_max_message(max_msg_id, max_chat_id):
             return True
 
-        text = self._render_message(msg)
         try:
-            tg_msg_id = await self._telegram.send_text_to_topic(
-                chat_id=telegram_user_id,
+            tg_msg_id = await self._send_message_to_telegram(
+                telegram_user_id=telegram_user_id,
                 topic_id=topic_id,
-                text=text,
+                msg=msg,
             )
         except Exception as exc:
             await self._audit_repo.log(
@@ -289,9 +293,69 @@ class InboundSyncService:
         )
         return True
 
+    async def _send_message_to_telegram(
+        self,
+        telegram_user_id: int,
+        topic_id: int,
+        msg: dict[str, Any],
+    ) -> int:
+        msg_type = self._normalize_rendered_message_type(
+            msg.get("type"),
+            msg.get("description"),
+            msg.get("text"),
+            msg.get("chat_id"),
+        )
+        media_url = str(msg.get("media_url") or "").strip()
+        prefix = self._render_prefix(msg)
+
+        if msg_type in {"photo", "image"} and media_url:
+            try:
+                return await self._telegram.send_photo_to_topic(
+                    chat_id=telegram_user_id,
+                    topic_id=topic_id,
+                    photo_url=media_url,
+                    caption=prefix,
+                )
+            except TelegramBadRequest as exc:
+                if self._should_fallback_from_media_url(exc):
+                    return await self._telegram.send_text_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        text=f"{prefix}\n[photo]: {media_url}",
+                    )
+                raise
+        if msg_type == "audio" and media_url:
+            try:
+                return await self._telegram.send_audio_to_topic(
+                    chat_id=telegram_user_id,
+                    topic_id=topic_id,
+                    audio_url=media_url,
+                    caption=prefix,
+                )
+            except TelegramBadRequest as exc:
+                if self._should_fallback_from_media_url(exc):
+                    return await self._telegram.send_text_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        text=f"{prefix}\n[audio]: {media_url}",
+                    )
+                raise
+
+        text = self._render_message(msg)
+        return await self._telegram.send_text_to_topic(
+            chat_id=telegram_user_id,
+            topic_id=topic_id,
+            text=text,
+        )
+
     def _render_message(self, msg: dict[str, Any]) -> str:
         """Render a MAX message to Telegram text. Fallback for unsupported types."""
-        msg_type = msg.get("type", "unknown")
+        msg_type = self._normalize_rendered_message_type(
+            msg.get("type"),
+            msg.get("description"),
+            msg.get("text"),
+            msg.get("chat_id"),
+        )
         prefix = self._render_prefix(msg)
         text_body = str(msg.get("text") or "").strip()
 
@@ -300,15 +364,69 @@ class InboundSyncService:
             return f"{prefix}\n{body}".strip()
 
         # Fallback for unsupported media types
-        body = f"[{msg_type}]: {msg.get('description', 'Unsupported content')}"
+        description = self._normalize_rendered_description(msg_type, msg.get("description"))
+        body = f"[{msg_type}]: {description}"
         return f"{prefix}\n{body}".strip()
 
     def _render_prefix(self, msg: dict[str, Any]) -> str:
-        sender_name = (msg.get("sender_name") or "Unknown").strip()
+        sender_name = str(msg.get("sender_name") or "Unknown").strip()
+        sender_id = str(msg.get("sender_id") or "UnknownID").strip()
         raw_time = msg.get("time")
         if raw_time:
             timestamp = datetime.fromtimestamp(int(raw_time) / 1000, tz=UTC)
             formatted_time = timestamp.strftime("%d.%m.%y %H:%M")
         else:
             formatted_time = "??.??.?? ??:??"
-        return f"[{sender_name} {formatted_time}]"
+        return f"[{sender_name} {sender_id} {formatted_time}]"
+
+    def _should_ignore_live_message(self, msg: dict[str, Any]) -> bool:
+        chat_id = str(msg.get("chat_id") or "").strip()
+        msg_type = str(msg.get("type") or "").strip().lower()
+        text_body = str(msg.get("text") or "").strip()
+
+        if text_body:
+            return False
+        if chat_id == "0" and msg_type == "user":
+            return False
+        return msg_type in {"user", "system", "service"}
+
+    def _normalize_rendered_message_type(
+        self,
+        raw_type: Any,
+        raw_description: Any,
+        raw_text: Any,
+        raw_chat_id: Any,
+    ) -> str:
+        normalized_type = str(raw_type or "unknown").strip().lower()
+        normalized_description = str(raw_description or "").strip().lower()
+        text_body = str(raw_text or "").strip()
+        chat_id = str(raw_chat_id or "").strip()
+
+        if text_body:
+            return "text"
+        if chat_id == "0" and normalized_type == "user":
+            return "media"
+
+        if normalized_type in {"photo", "image", "picture"}:
+            return "image"
+        if normalized_type in {"video", "gif", "sticker", "file", "audio", "voice", "document"}:
+            return normalized_type
+        if normalized_type != "unknown":
+            return normalized_type
+
+        if normalized_description in {"photo", "image", "picture"}:
+            return "image"
+        if normalized_description in {"video", "gif", "sticker", "file", "audio", "voice", "document"}:
+            return normalized_description
+        return normalized_type
+
+    def _normalize_rendered_description(self, msg_type: str, raw_description: Any) -> str:
+        description = str(raw_description or "").strip()
+        if description:
+            return description
+        if msg_type == "media":
+            return "Media message"
+        return "Unsupported content"
+
+    def _should_fallback_from_media_url(self, exc: TelegramBadRequest) -> bool:
+        return "failed to get http url content" in str(exc).lower()

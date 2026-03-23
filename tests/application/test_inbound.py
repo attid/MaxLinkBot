@@ -6,6 +6,8 @@ import time
 from datetime import datetime, UTC
 from unittest.mock import AsyncMock, MagicMock
 
+from aiogram.exceptions import TelegramBadRequest
+
 from src.application.ports.repositories import (
     AuditRepository,
     BindingRepository,
@@ -117,6 +119,219 @@ class TestInboundSyncService:
         max_client.close.assert_not_called()
         factory.assert_called_once_with(123, "token")
         repos.telegram.send_text_to_topic.assert_awaited_once()
+
+    async def test_poll_user_ignores_service_live_event_for_regular_chat(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(
+            return_value=[
+                {
+                    "max_message_id": "1",
+                    "chat_id": "12345",
+                    "type": "user",
+                    "sender_name": 192875451,
+                    "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+                }
+            ]
+        )
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        factory = MagicMock(return_value=max_client)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=factory,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        repos.telegram.send_text_to_topic.assert_not_called()
+        repos.message_link_repo.save.assert_not_called()
+        repos.cursor_repo.upsert.assert_not_called()
+
+    async def test_poll_user_keeps_self_chat_user_media_event(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=100)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(
+            return_value=[
+                {
+                    "max_message_id": "1",
+                    "chat_id": "0",
+                    "type": "user",
+                    "sender_name": 192875451,
+                    "sender_id": 192875451,
+                    "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+                }
+            ]
+        )
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        factory = MagicMock(return_value=max_client)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=factory,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        repos.telegram.send_text_to_topic.assert_awaited_once()
+        repos.message_link_repo.save.assert_awaited_once()
+        repos.cursor_repo.upsert.assert_awaited_once()
+
+    async def test_deliver_message_sends_photo_to_topic_when_media_url_present(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_photo_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "photo",
+                "media_url": "https://example.com/image.jpg",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_photo_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            photo_url="https://example.com/image.jpg",
+            caption="[Igor 192875451 22.03.26 22:30]",
+        )
+
+    async def test_deliver_message_sends_audio_to_topic_when_media_url_present(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_audio_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "audio",
+                "media_url": "https://example.com/audio.mp3",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_audio_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            audio_url="https://example.com/audio.mp3",
+            caption="[Igor 192875451 22.03.26 22:30]",
+        )
+
+    async def test_deliver_message_falls_back_to_text_when_audio_url_is_rejected(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_audio_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=MagicMock(),
+                message="failed to get HTTP URL content",
+            )
+        )
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "audio",
+                "media_url": "https://example.com/audio.mp3",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_text_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            text="[Igor 192875451 22.03.26 22:30]\n[audio]: https://example.com/audio.mp3",
+        )
 
     async def test_poll_user_reuses_live_client_between_ticks(self) -> None:
         repos = MockRepos()
@@ -588,10 +803,35 @@ class TestInboundSyncService:
                 "type": "text",
                 "text": "Hello!",
                 "sender_name": "Vasya",
+                "sender_id": 7,
                 "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
             }
         )
-        assert rendered == "[Vasya 22.03.26 14:35]\nHello!"
+        assert rendered == "[Vasya 7 22.03.26 14:35]\nHello!"
+
+    async def test_render_message_coerces_non_string_sender_name(self) -> None:
+        repos = MockRepos()
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        rendered = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "type": "text",
+                "text": "Hello!",
+                "sender_name": 192875451,
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert rendered == "[192875451 192875451 22.03.26 14:35]\nHello!"
 
     async def test_render_message_unsupported_fallback(self) -> None:
         """Unsupported message types render with type and description."""
@@ -615,7 +855,7 @@ class TestInboundSyncService:
                 "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
             }
         )
-        assert result == "[Vasya 22.03.26 14:35]\n[image]: Sunset photo"
+        assert result == "[Vasya UnknownID 22.03.26 14:35]\n[image]: Sunset photo"
 
     async def test_render_message_unknown_type(self) -> None:
         """Unknown type without description uses default fallback."""
@@ -637,7 +877,76 @@ class TestInboundSyncService:
                 "time": int(datetime(2026, 3, 22, 14, 35, tzinfo=UTC).timestamp() * 1000),
             }
         )
-        assert result == "[Unknown 22.03.26 14:35]\n[unknown]: Unsupported content"
+        assert result == "[Unknown UnknownID 22.03.26 14:35]\n[unknown]: Unsupported content"
+
+    async def test_render_message_unknown_media_fallback(self) -> None:
+        repos = MockRepos()
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        result = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "type": "unknown",
+                "description": "photo",
+                "sender_name": "Igor",
+                "time": int(datetime(2026, 3, 22, 22, 29, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert result == "[Igor UnknownID 22.03.26 22:29]\n[image]: photo"
+
+    async def test_render_message_media_without_description_uses_media_message(self) -> None:
+        repos = MockRepos()
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        result = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "type": "media",
+                "sender_name": "Igor",
+                "time": int(datetime(2026, 3, 22, 22, 29, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert result == "[Igor UnknownID 22.03.26 22:29]\n[media]: Media message"
+
+    async def test_render_message_self_chat_user_type_uses_media_placeholder(self) -> None:
+        repos = MockRepos()
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        result = service._render_message(  # type: ignore[reportPrivateUsage]
+            {
+                "chat_id": "0",
+                "type": "user",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 29, tzinfo=UTC).timestamp() * 1000),
+            }
+        )
+        assert result == "[Igor 192875451 22.03.26 22:29]\n[media]: Media message"
 
     async def test_render_message_prefers_text_body_when_type_is_unknown(self) -> None:
         repos = MockRepos()
@@ -660,4 +969,4 @@ class TestInboundSyncService:
                 "time": int(datetime(2026, 3, 22, 21, 28, tzinfo=UTC).timestamp() * 1000),
             }
         )
-        assert result == "[Аттракционы Ривьера Сочи 22.03.26 21:28]\nЧерновой план"
+        assert result == "[Аттракционы Ривьера Сочи UnknownID 22.03.26 21:28]\nЧерновой план"
