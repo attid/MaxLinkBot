@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from collections.abc import Awaitable
 from datetime import UTC, datetime
 from collections.abc import Callable
@@ -42,6 +43,9 @@ class InboundSyncService:
         catchup_interval_seconds: float = 3600.0,
         reconcile_user: Callable[[int], Awaitable[None]] | None = None,
         shared_runtime: MaxClientRuntimeRegistry | None = None,
+        reconnect_storm_threshold: int = 5,
+        reconnect_storm_window_seconds: float = 300.0,
+        time_func: Callable[[], float] | None = None,
     ) -> None:
         self._binding_repo = binding_repo
         self._max_chat_repo = max_chat_repo
@@ -54,6 +58,10 @@ class InboundSyncService:
         self._catchup_interval_seconds = catchup_interval_seconds
         self._reconcile_user = reconcile_user
         self._shared_runtime = shared_runtime
+        self._reconnect_storm_threshold = reconnect_storm_threshold
+        self._reconnect_storm_window_seconds = reconnect_storm_window_seconds
+        self._time_func = time_func or time.time
+        self._recent_reconnects: deque[float] = deque()
         self._live_client: MaxClient | None = None
         self._live_session_owner_id: int | None = None
         self._live_session_data: str | None = None
@@ -76,6 +84,7 @@ class InboundSyncService:
 
         reconnect_detected = await max_client.consume_reconnect_event()
         if reconnect_detected:
+            await self._register_reconnect_event()
             recovered = await self._recover_after_reconnect(telegram_user_id, max_client)
             if not recovered:
                 await self._catch_up_user(telegram_user_id, max_client, include_discovery=False)
@@ -180,6 +189,25 @@ class InboundSyncService:
             delivered_any = delivered_any or delivered
 
         return delivered_any
+
+    async def _register_reconnect_event(self) -> None:
+        now = self._time_func()
+        window_start = now - self._reconnect_storm_window_seconds
+        self._recent_reconnects.append(now)
+        while self._recent_reconnects and self._recent_reconnects[0] < window_start:
+            self._recent_reconnects.popleft()
+
+        if len(self._recent_reconnects) < self._reconnect_storm_threshold:
+            return
+
+        if self._shared_runtime is not None and self._live_session_owner_id is not None:
+            await self._shared_runtime.close_user(self._live_session_owner_id)
+        elif self._live_client is not None:
+            await self._live_client.close()
+
+        raise RuntimeError(
+            "MAX reconnect storm detected; runtime closed for fresh restart"
+        )
 
     async def _process_live_message(self, telegram_user_id: int, msg: dict[str, Any]) -> None:
         if self._should_ignore_live_message(msg):

@@ -634,6 +634,56 @@ class TestInboundSyncService:
         shared_runtime.get_dirty_chats.assert_awaited_once_with(123)
         repos.topic_repo.find_by_user.assert_not_awaited()
 
+    async def test_poll_user_raises_on_reconnect_storm_and_closes_live_client(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.find_by_user = AsyncMock(return_value=[])
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=True)
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        shared_runtime = MagicMock()
+        shared_runtime.get_client = AsyncMock(return_value=max_client)
+        shared_runtime.get_dirty_chats = AsyncMock(return_value=[])
+        shared_runtime.get_last_active_chat = AsyncMock(return_value=None)
+        shared_runtime.close_user = AsyncMock()
+
+        now = 1000.0
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=3600,
+            shared_runtime=shared_runtime,
+            reconnect_storm_threshold=3,
+            reconnect_storm_window_seconds=60.0,
+            time_func=lambda: now,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+        now += 5
+        await service.poll_user(telegram_user_id=123)
+        now += 5
+
+        try:
+            await service.poll_user(telegram_user_id=123)
+        except RuntimeError as exc:
+            assert "reconnect storm" in str(exc).lower()
+        else:
+            raise AssertionError("Expected reconnect storm RuntimeError")
+
+        shared_runtime.close_user.assert_awaited_once_with(123)
+
     async def test_poll_chat_no_topic_mapping(self) -> None:
         """No topic for user+chat → nothing to do."""
         repos = MockRepos()

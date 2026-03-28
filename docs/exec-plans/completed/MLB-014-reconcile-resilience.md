@@ -16,12 +16,12 @@
 
 ## План изменений
 
-1. [ ] Добавить regression tests на backfill-message failure и per-chat reconcile failure.
-2. [ ] Изолировать отправку отдельных backfill сообщений: log-and-continue вместо raise.
-3. [ ] Возвращать из backfill признак полного/неполного успеха.
-4. [ ] Не обновлять cursor, если backfill завершился с ошибками.
-5. [ ] Изолировать reconcile per MAX chat: один проблемный чат не валит весь `/resync`.
-6. [ ] Прогнать целевые pytest-тесты.
+1. [x] Добавить regression tests на backfill-message failure и per-chat reconcile failure.
+2. [x] Изолировать отправку отдельных backfill сообщений: log-and-continue вместо raise.
+3. [x] Возвращать из backfill признак полного/неполного успеха.
+4. [x] Не обновлять cursor, если backfill завершился с ошибками.
+5. [x] Изолировать reconcile per MAX chat: один проблемный чат не валит весь `/resync`.
+6. [x] Прогнать целевые pytest-тесты.
 
 ## Риски и открытые вопросы
 

@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from src.application.auth.exceptions import AuthError
@@ -20,6 +21,24 @@ from src.domain.bindings.models import BindingStatus
 from src.domain.sync.models import AuditEventType
 
 logger = logging.getLogger(__name__)
+
+
+class RuntimeHealthTracker:
+    """Tracks runtime health through a filesystem marker."""
+
+    def __init__(self, marker_path: str | Path = "/tmp/maxlinkbot.unhealthy") -> None:
+        self._marker_path = Path(marker_path)
+
+    def mark_healthy(self) -> None:
+        with suppress(FileNotFoundError):
+            self._marker_path.unlink()
+
+    def mark_unhealthy(self, reason: str) -> None:
+        self._marker_path.parent.mkdir(parents=True, exist_ok=True)
+        self._marker_path.write_text(reason, encoding="utf-8")
+
+    def is_healthy(self) -> bool:
+        return not self._marker_path.exists()
 
 
 class HealthCheckService:
@@ -86,12 +105,14 @@ class BackgroundPoller:
         inbound_factory: Any,  # (telegram_user_id) -> InboundSyncService per-user
         poll_interval: float = 60.0,
         health_check_interval: float = 300.0,
+        runtime_health_tracker: RuntimeHealthTracker | None = None,
     ) -> None:
         self._binding_repo = binding_repo
         self._health_service = health_service
         self._inbound_factory = inbound_factory
         self._poll_interval = poll_interval
         self._health_check_interval = health_check_interval
+        self._runtime_health_tracker = runtime_health_tracker or RuntimeHealthTracker()
         self._running = False
         self._inbound_services: dict[int, Any] = {}
         self._last_health_check_at: dict[int, float] = {}
@@ -99,6 +120,7 @@ class BackgroundPoller:
     async def start(self) -> None:
         """Start the background polling loop. Runs until stop() is called."""
         self._running = True
+        self._runtime_health_tracker.mark_healthy()
         while self._running:
             await self._poll_once()
             await asyncio.sleep(self._poll_interval)
@@ -115,12 +137,21 @@ class BackgroundPoller:
     async def _poll_once(self) -> None:
         """Poll all active bindings once."""
         bindings = await self._binding_repo.find_active()
+        had_runtime_failure = False
         for binding in bindings:
             if not self._running:
                 break
-            await self._poll_user(binding.telegram_user_id)
+            poll_ok = await self._poll_user(binding.telegram_user_id)
+            had_runtime_failure = had_runtime_failure or not poll_ok
 
-    async def _poll_user(self, telegram_user_id: int) -> None:
+        if had_runtime_failure:
+            self._runtime_health_tracker.mark_unhealthy(
+                f"Background poll failed at {int(time.time())}"
+            )
+        else:
+            self._runtime_health_tracker.mark_healthy()
+
+    async def _poll_user(self, telegram_user_id: int) -> bool:
         """Poll a single user, handling reauth transitions."""
         now = time.time()
         last_health_check_at = self._last_health_check_at.get(telegram_user_id)
@@ -138,7 +169,7 @@ class BackgroundPoller:
                 close = getattr(inbound, "close", None)
                 if close is not None:
                     await close()
-            return
+            return True
 
         inbound = self._inbound_services.get(telegram_user_id)
         if inbound is None:
@@ -147,9 +178,11 @@ class BackgroundPoller:
         try:
             await inbound.poll_user(telegram_user_id)
         except AuthError:
-            return
+            return True
         except Exception:
             logger.exception(
                 "background inbound poll failed telegram_user_id=%s",
                 telegram_user_id,
             )
+            return False
+        return True

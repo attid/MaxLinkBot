@@ -22,6 +22,11 @@ Environment variables are the only configuration mechanism.
 | `MAX_WORK_DIR` | `/data/max_sessions` | Directory for per-user MAX session data |
 | `DATABASE_URL` | `sqlite+aiosqlite:////data/maxlinkbot.db` | SQLite connection string |
 | `POLL_INTERVAL_SECONDS` | `30` | Background poll interval per active binding |
+| `HEALTH_CHECK_INTERVAL_SECONDS` | `300` | Interval between MAX session health checks |
+| `CATCHUP_INTERVAL_SECONDS` | `3600` | Full inbound catch-up interval for existing topics |
+| `RECONNECT_STORM_THRESHOLD` | `5` | Reconnect count within the storm window that marks runtime unhealthy |
+| `RECONNECT_STORM_WINDOW_SECONDS` | `300` | Time window for reconnect storm detection |
+| `RUNTIME_UNHEALTHY_MARKER_PATH` | `/tmp/maxlinkbot.unhealthy` | Marker file used by container healthcheck |
 | `BACKFILL_MESSAGE_COUNT` | `5` | Number of historical messages to pull on topic creation |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
@@ -54,6 +59,10 @@ DATABASE_URL="sqlite+aiosqlite://:memory:"
 
 **Why:** Env is the standard for 12-factor apps and container deployments. No extra files to mount or template.
 **Why not config file:** Adds complexity with no benefit for a single-host bot.
+
+## Runtime Healthcheck
+
+Container health is not process-liveness only. The bot writes an unhealthy marker file when inbound runtime degrades, for example on a reconnect storm. Docker healthcheck treats the container as unhealthy when `RUNTIME_UNHEALTHY_MARKER_PATH` exists.
 
 ## Decision: No Secrets in Env Defaults
 

@@ -11,7 +11,11 @@ from aiogram.types import BotCommand
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.application.auth.authorization import AllowlistGate, AuthorizationFlowService
-from src.application.health.service import BackgroundPoller, HealthCheckService
+from src.application.health.service import (
+    BackgroundPoller,
+    HealthCheckService,
+    RuntimeHealthTracker,
+)
 from src.application.polling.max_runtime import MaxClientRuntimeRegistry
 from src.application.reconcile.service import RefreshReconcileService
 from src.application.routing.outbound import OutboundSyncService
@@ -44,8 +48,11 @@ class Settings(BaseSettings):
     poll_interval_seconds: float = 1.0
     health_check_interval_seconds: int = 300
     catchup_interval_seconds: int = 3600
+    reconnect_storm_threshold: int = 5
+    reconnect_storm_window_seconds: int = 300
     backfill_message_count: int = 5
     log_level: str = "INFO"
+    runtime_unhealthy_marker_path: str = "/tmp/maxlinkbot.unhealthy"
 
     @property
     def allowed_ids_set(self) -> set[int]:
@@ -136,6 +143,7 @@ async def main() -> None:
         telegram_client=tg_client,
         max_client_factory=oneshot_max_factory,
     )
+    runtime_health_tracker = RuntimeHealthTracker(settings.runtime_unhealthy_marker_path)
 
     # Inbound factory for background poller
     async def reconcile_user(telegram_user_id: int) -> None:
@@ -156,6 +164,8 @@ async def main() -> None:
             catchup_interval_seconds=float(settings.catchup_interval_seconds),
             reconcile_user=reconcile_user,
             shared_runtime=shared_max_runtime,
+            reconnect_storm_threshold=int(settings.reconnect_storm_threshold),
+            reconnect_storm_window_seconds=float(settings.reconnect_storm_window_seconds),
         )
 
     poller = BackgroundPoller(
@@ -164,6 +174,7 @@ async def main() -> None:
         inbound_factory=inbound_factory,
         poll_interval=float(settings.poll_interval_seconds),
         health_check_interval=float(settings.health_check_interval_seconds),
+        runtime_health_tracker=runtime_health_tracker,
     )
 
     # Register Telegram handlers

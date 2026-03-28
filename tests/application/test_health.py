@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock
 
 from src.application.auth.exceptions import AuthError
-from src.application.health.service import BackgroundPoller, HealthCheckService
+from src.application.health.service import (
+    BackgroundPoller,
+    HealthCheckService,
+    RuntimeHealthTracker,
+)
 from src.application.ports.repositories import AuditRepository, BindingRepository
 from src.application.ports.telegram_client import TelegramClient
 from src.domain.bindings.models import Binding, BindingStatus
@@ -312,3 +318,71 @@ class TestBackgroundPoller:
         await poller._poll_user(123)  # type: ignore[reportPrivateUsage]
 
         inbound.poll_user.assert_awaited_once_with(123)
+
+    async def test_poll_once_marks_runtime_unhealthy_when_inbound_fails(self) -> None:
+        repos = MockHealthRepos()
+        binding = Binding(
+            telegram_user_id=123,
+            max_session_data="session",
+            status=BindingStatus.ACTIVE,
+            created_at=0,
+            updated_at=0,
+        )
+        repos.binding_repo.find_active = AsyncMock(return_value=[binding])
+        repos.binding_repo.get = AsyncMock(return_value=binding)
+
+        health = MagicMock()
+        health.check_and_notify = AsyncMock()
+
+        inbound = MagicMock()
+        inbound.poll_user = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with TemporaryDirectory() as temp_dir:
+            tracker = RuntimeHealthTracker(Path(temp_dir) / "runtime.unhealthy")
+            poller = BackgroundPoller(
+                binding_repo=repos.binding_repo,
+                health_service=health,
+                inbound_factory=lambda _uid: inbound,
+                poll_interval=60.0,
+                runtime_health_tracker=tracker,
+            )
+
+            poller._running = True  # type: ignore[reportPrivateUsage]
+            await poller._poll_once()  # type: ignore[reportPrivateUsage]
+
+            assert tracker.is_healthy() is False
+
+    async def test_poll_once_restores_runtime_health_after_clean_cycle(self) -> None:
+        repos = MockHealthRepos()
+        binding = Binding(
+            telegram_user_id=123,
+            max_session_data="session",
+            status=BindingStatus.ACTIVE,
+            created_at=0,
+            updated_at=0,
+        )
+        repos.binding_repo.find_active = AsyncMock(return_value=[binding])
+        repos.binding_repo.get = AsyncMock(return_value=binding)
+
+        health = MagicMock()
+        health.check_and_notify = AsyncMock()
+
+        inbound = MagicMock()
+        inbound.poll_user = AsyncMock(side_effect=[RuntimeError("boom"), None])
+
+        with TemporaryDirectory() as temp_dir:
+            tracker = RuntimeHealthTracker(Path(temp_dir) / "runtime.unhealthy")
+            poller = BackgroundPoller(
+                binding_repo=repos.binding_repo,
+                health_service=health,
+                inbound_factory=lambda _uid: inbound,
+                poll_interval=60.0,
+                runtime_health_tracker=tracker,
+            )
+
+            poller._running = True  # type: ignore[reportPrivateUsage]
+            await poller._poll_once()  # type: ignore[reportPrivateUsage]
+            assert tracker.is_healthy() is False
+
+            await poller._poll_once()  # type: ignore[reportPrivateUsage]
+            assert tracker.is_healthy() is True

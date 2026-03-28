@@ -15,8 +15,7 @@ services:
     volumes:
       - maxlinkbot-data:/data
     healthcheck:
-      # Simple process liveness — if the process dies, container restarts
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "! test -f /tmp/maxlinkbot.unhealthy"]
       interval: 30s
       timeout: 10s
       retries: 3
