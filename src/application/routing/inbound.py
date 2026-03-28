@@ -27,6 +27,10 @@ from src.domain.messages.models import Direction, MessageLink
 from src.domain.sync.models import AuditEventType, SyncCursor
 
 
+class MaxRuntimeDegradedError(RuntimeError):
+    """Expected runtime degradation signal for reconnect storms."""
+
+
 class InboundSyncService:
     """Polls MAX for new messages and delivers them to Telegram topics."""
 
@@ -205,7 +209,7 @@ class InboundSyncService:
         elif self._live_client is not None:
             await self._live_client.close()
 
-        raise RuntimeError(
+        raise MaxRuntimeDegradedError(
             "MAX reconnect storm detected; runtime closed for fresh restart"
         )
 

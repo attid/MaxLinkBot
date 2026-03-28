@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from src.application.auth.exceptions import AuthError
+from src.application.routing.inbound import MaxRuntimeDegradedError
 from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
     AuditRepository,
@@ -179,6 +180,13 @@ class BackgroundPoller:
             await inbound.poll_user(telegram_user_id)
         except AuthError:
             return True
+        except MaxRuntimeDegradedError as exc:
+            logger.warning(
+                "background inbound runtime degraded telegram_user_id=%s reason=%s",
+                telegram_user_id,
+                exc,
+            )
+            return False
         except Exception:
             logger.exception(
                 "background inbound poll failed telegram_user_id=%s",

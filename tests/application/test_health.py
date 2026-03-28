@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from src.application.auth.exceptions import AuthError
 from src.application.health.service import (
     BackgroundPoller,
@@ -14,6 +16,7 @@ from src.application.health.service import (
 )
 from src.application.ports.repositories import AuditRepository, BindingRepository
 from src.application.ports.telegram_client import TelegramClient
+from src.application.routing.inbound import MaxRuntimeDegradedError
 from src.domain.bindings.models import Binding, BindingStatus
 
 
@@ -318,6 +321,43 @@ class TestBackgroundPoller:
         await poller._poll_user(123)  # type: ignore[reportPrivateUsage]
 
         inbound.poll_user.assert_awaited_once_with(123)
+
+    async def test_poll_user_logs_runtime_degraded_as_warning_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repos = MockHealthRepos()
+        binding = Binding(
+            telegram_user_id=123,
+            max_session_data="session",
+            status=BindingStatus.ACTIVE,
+            created_at=0,
+            updated_at=0,
+        )
+        repos.binding_repo.get = AsyncMock(return_value=binding)
+
+        health = MagicMock()
+        health.check_and_notify = AsyncMock()
+
+        inbound = MagicMock()
+        inbound.poll_user = AsyncMock(
+            side_effect=MaxRuntimeDegradedError(
+                "MAX reconnect storm detected; runtime closed for fresh restart"
+            )
+        )
+
+        poller = BackgroundPoller(
+            binding_repo=repos.binding_repo,
+            health_service=health,
+            inbound_factory=lambda _uid: inbound,
+            poll_interval=60.0,
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await poller._poll_user(123)  # type: ignore[reportPrivateUsage]
+
+        assert result is False
+        assert "runtime degraded" in caplog.text
+        assert "Traceback" not in caplog.text
 
     async def test_poll_once_marks_runtime_unhealthy_when_inbound_fails(self) -> None:
         repos = MockHealthRepos()
