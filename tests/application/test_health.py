@@ -392,6 +392,43 @@ class TestBackgroundPoller:
 
             assert tracker.is_healthy() is False
 
+    async def test_poll_once_updates_runtime_heartbeat(self) -> None:
+        repos = MockHealthRepos()
+        binding = Binding(
+            telegram_user_id=123,
+            max_session_data="session",
+            status=BindingStatus.ACTIVE,
+            created_at=0,
+            updated_at=0,
+        )
+        repos.binding_repo.find_active = AsyncMock(return_value=[binding])
+        repos.binding_repo.get = AsyncMock(return_value=binding)
+
+        health = MagicMock()
+        health.check_and_notify = AsyncMock()
+
+        inbound = MagicMock()
+        inbound.poll_user = AsyncMock(return_value=None)
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            tracker = RuntimeHealthTracker(
+                marker_path=temp_path / "runtime.unhealthy",
+                heartbeat_path=temp_path / "runtime.heartbeat",
+            )
+            poller = BackgroundPoller(
+                binding_repo=repos.binding_repo,
+                health_service=health,
+                inbound_factory=lambda _uid: inbound,
+                poll_interval=60.0,
+                runtime_health_tracker=tracker,
+            )
+
+            poller._running = True  # type: ignore[reportPrivateUsage]
+            await poller._poll_once()  # type: ignore[reportPrivateUsage]
+
+            assert tracker.has_fresh_heartbeat() is True
+
     async def test_poll_once_restores_runtime_health_after_clean_cycle(self) -> None:
         repos = MockHealthRepos()
         binding = Binding(
@@ -426,3 +463,23 @@ class TestBackgroundPoller:
 
             await poller._poll_once()  # type: ignore[reportPrivateUsage]
             assert tracker.is_healthy() is True
+
+
+class TestRuntimeHealthTracker:
+    def test_runtime_health_tracker_reports_stale_heartbeat_as_unhealthy(self) -> None:
+        now = 1_000.0
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            tracker = RuntimeHealthTracker(
+                marker_path=temp_path / "runtime.unhealthy",
+                heartbeat_path=temp_path / "runtime.heartbeat",
+                heartbeat_stale_after_seconds=180.0,
+                time_func=lambda: now,
+            )
+
+            tracker.record_heartbeat()
+            assert tracker.is_healthy() is True
+
+            now += 181.0
+
+            assert tracker.is_healthy() is False

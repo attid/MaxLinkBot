@@ -27,19 +27,42 @@ logger = logging.getLogger(__name__)
 class RuntimeHealthTracker:
     """Tracks runtime health through a filesystem marker."""
 
-    def __init__(self, marker_path: str | Path = "/tmp/maxlinkbot.unhealthy") -> None:
+    def __init__(
+        self,
+        marker_path: str | Path = "/tmp/maxlinkbot.unhealthy",
+        heartbeat_path: str | Path = "/tmp/maxlinkbot.heartbeat",
+        heartbeat_stale_after_seconds: float = 180.0,
+        time_func: Callable[[], float] | None = None,
+    ) -> None:
         self._marker_path = Path(marker_path)
+        self._heartbeat_path = Path(heartbeat_path)
+        self._heartbeat_stale_after_seconds = heartbeat_stale_after_seconds
+        self._time_func = time_func or time.time
 
     def mark_healthy(self) -> None:
         with suppress(FileNotFoundError):
             self._marker_path.unlink()
+        self.record_heartbeat()
 
     def mark_unhealthy(self, reason: str) -> None:
         self._marker_path.parent.mkdir(parents=True, exist_ok=True)
         self._marker_path.write_text(reason, encoding="utf-8")
 
+    def record_heartbeat(self) -> None:
+        self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        self._heartbeat_path.write_text(str(self._time_func()), encoding="utf-8")
+
+    def has_fresh_heartbeat(self) -> bool:
+        if not self._heartbeat_path.exists():
+            return False
+        try:
+            last_heartbeat = float(self._heartbeat_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        return (self._time_func() - last_heartbeat) <= self._heartbeat_stale_after_seconds
+
     def is_healthy(self) -> bool:
-        return not self._marker_path.exists()
+        return not self._marker_path.exists() and self.has_fresh_heartbeat()
 
 
 class HealthCheckService:

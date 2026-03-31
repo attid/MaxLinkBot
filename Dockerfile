@@ -16,6 +16,6 @@ ENV PYTHONPATH="/app"
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD ["/bin/sh", "-c", "! test -f /tmp/maxlinkbot.unhealthy"]
+  CMD ["/app/.venv/bin/python", "-m", "src.healthcheck"]
 
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "src.main"]

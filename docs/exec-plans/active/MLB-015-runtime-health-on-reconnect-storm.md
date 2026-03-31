@@ -20,6 +20,9 @@
 4. [x] Обновить container healthcheck, чтобы он читал реальный runtime health status.
 5. [x] Добавить regression tests на unhealthy transition.
 6. [x] Прогнать целевые pytest-тесты.
+7. [x] Добавить runtime heartbeat freshness, чтобы тихий stall без новых poll-циклов тоже переводил контейнер в unhealthy.
+8. [x] Обновить healthcheck на проверку stale heartbeat с порогом 180 секунд.
+9. [x] Добавить regression tests на stale runtime heartbeat.
 
 ## Риски и открытые вопросы
 

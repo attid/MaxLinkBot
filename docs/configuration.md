@@ -27,6 +27,8 @@ Environment variables are the only configuration mechanism.
 | `RECONNECT_STORM_THRESHOLD` | `5` | Reconnect count within the storm window that marks runtime unhealthy |
 | `RECONNECT_STORM_WINDOW_SECONDS` | `300` | Time window for reconnect storm detection |
 | `RUNTIME_UNHEALTHY_MARKER_PATH` | `/tmp/maxlinkbot.unhealthy` | Marker file used by container healthcheck |
+| `RUNTIME_HEARTBEAT_PATH` | `/tmp/maxlinkbot.heartbeat` | Heartbeat file updated by the background poller |
+| `RUNTIME_HEARTBEAT_STALE_AFTER_SECONDS` | `180` | Max allowed age of the runtime heartbeat before healthcheck fails |
 | `BACKFILL_MESSAGE_COUNT` | `5` | Number of historical messages to pull on topic creation |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
@@ -62,7 +64,7 @@ DATABASE_URL="sqlite+aiosqlite://:memory:"
 
 ## Runtime Healthcheck
 
-Container health is not process-liveness only. The bot writes an unhealthy marker file when inbound runtime degrades, for example on a reconnect storm. Docker healthcheck treats the container as unhealthy when `RUNTIME_UNHEALTHY_MARKER_PATH` exists.
+Container health is not process-liveness only. The bot writes an unhealthy marker file when inbound runtime degrades, for example on a reconnect storm, and also updates a heartbeat file during each background poll cycle. Docker healthcheck treats the container as unhealthy when `RUNTIME_UNHEALTHY_MARKER_PATH` exists or the heartbeat becomes stale.
 
 ## Decision: No Secrets in Env Defaults
 

@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     catchup_interval_seconds: int = 3600
     reconnect_storm_threshold: int = 5
     reconnect_storm_window_seconds: int = 300
+    runtime_heartbeat_path: str = "/tmp/maxlinkbot.heartbeat"
+    runtime_heartbeat_stale_after_seconds: int = 180
     backfill_message_count: int = 5
     log_level: str = "INFO"
     runtime_unhealthy_marker_path: str = "/tmp/maxlinkbot.unhealthy"
@@ -143,7 +145,11 @@ async def main() -> None:
         telegram_client=tg_client,
         max_client_factory=oneshot_max_factory,
     )
-    runtime_health_tracker = RuntimeHealthTracker(settings.runtime_unhealthy_marker_path)
+    runtime_health_tracker = RuntimeHealthTracker(
+        marker_path=settings.runtime_unhealthy_marker_path,
+        heartbeat_path=settings.runtime_heartbeat_path,
+        heartbeat_stale_after_seconds=float(settings.runtime_heartbeat_stale_after_seconds),
+    )
 
     # Inbound factory for background poller
     async def reconcile_user(telegram_user_id: int) -> None:
