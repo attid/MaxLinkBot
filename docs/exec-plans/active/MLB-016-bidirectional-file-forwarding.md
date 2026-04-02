@@ -37,6 +37,7 @@
 - MAX file URL может оказаться одноразовым или недоступным для прямого Telegram fetch, как уже было с частью audio URL.
 - Возможно, разные file attaches (`document`, `file`, `archive`, `pdf`) будут приходить через разные payload shapes.
 - Если `maxapi-python` не умеет generic file send, придётся фиксировать ограничение и выбирать fallback/альтернативный attachment path.
+- Подтверждено, что self-chat `chat_id=0` может отдавать `FileAttach` только с `token/name/size` и без `url`; для таких сообщений сейчас поддерживается корректный file fallback по имени, но не бинарная пересылка файла.
 
 ## Верификация
 

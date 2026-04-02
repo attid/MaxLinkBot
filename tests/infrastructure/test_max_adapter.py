@@ -260,6 +260,43 @@ async def test_get_messages_extracts_audio_attach_url_from_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_messages_extracts_file_attach_name_without_url_from_history() -> None:
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = ""
+    raw_message.sender = 7
+    raw_message.sender_id = None
+    raw_message.time = 123
+    raw_message.type = "USER"
+    raw_message.description = None
+    raw_message.attaches = [
+        SimpleNamespace(
+            type=SimpleNamespace(name="FILE", value="FILE"),
+            name="crash.txt",
+            token="abc-token",
+            size=1234,
+        )
+    ]
+
+    user = SimpleNamespace(
+        names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")]
+    )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("0", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "document"
+    assert messages[0]["media_url"] is None
+    assert messages[0]["file_name"] == "crash.txt"
+
+
+@pytest.mark.asyncio
 async def test_get_messages_extracts_document_attach_url_and_filename_from_history() -> None:
     raw_message = MagicMock()
     raw_message.id = 42

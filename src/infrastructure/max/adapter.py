@@ -249,8 +249,11 @@ class PymaxAdapter(MaxClientPort):
                     return "video", url.strip(), self._extract_attach_filename(attach)
             if type_name in {"file", "document"}:
                 url = getattr(attach, "url", None)
+                file_name = self._extract_attach_filename(attach)
                 if isinstance(url, str) and url.strip():
-                    return "document", url.strip(), self._extract_attach_filename(attach)
+                    return "document", url.strip(), file_name
+                if file_name:
+                    return "document", None, file_name
         return None, None, None
 
     def _extract_attach_filename(self, attach: Any) -> str | None:

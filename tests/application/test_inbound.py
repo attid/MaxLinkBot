@@ -248,6 +248,50 @@ class TestInboundSyncService:
             caption="[Igor 192875451 22.03.26 22:30]",
         )
 
+    async def test_deliver_message_includes_text_in_photo_caption(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_photo_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "photo",
+                "media_url": "https://example.com/image.jpg",
+                "text": "Кроме как здесь, не знаю как общаться.",
+                "sender_name": "Ирина",
+                "sender_id": 109283159,
+                "time": int(datetime(2026, 3, 20, 15, 50, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_photo_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            photo_url="https://example.com/image.jpg",
+            caption=(
+                "[Ирина 109283159 20.03.26 15:50]\n"
+                "Кроме как здесь, не знаю как общаться."
+            ),
+        )
+
     async def test_deliver_message_sends_audio_to_topic_when_media_url_present(self) -> None:
         repos = MockRepos()
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
@@ -375,6 +419,45 @@ class TestInboundSyncService:
             text="[Igor 192875451 22.03.26 22:30]\n[audio]: https://example.com/audio.mp3",
         )
 
+    async def test_deliver_message_falls_back_to_file_name_when_document_has_no_url(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "document",
+                "file_name": "crash.txt",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 4, 2, 18, 4, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_text_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            text="[Igor 192875451 02.04.26 18:04]\n[file]: crash.txt",
+        )
+
     async def test_poll_user_reuses_live_client_between_ticks(self) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(
@@ -491,6 +574,50 @@ class TestInboundSyncService:
         await service.poll_user(telegram_user_id=123)
 
         shared_runtime.get_dirty_chats.assert_awaited_once_with(123)
+        max_client.get_messages.assert_awaited_once_with("chat1", since_message_id=None, limit=50)
+
+    async def test_poll_user_throttles_empty_dirty_chat_polls(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        shared_runtime = MagicMock()
+        shared_runtime.get_client = AsyncMock(return_value=max_client)
+        shared_runtime.get_dirty_chats = AsyncMock(return_value=["chat1"])
+
+        now = 1_000.0
+
+        def time_func() -> float:
+            return now
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=3600,
+            shared_runtime=shared_runtime,
+            time_func=time_func,
+        )
+
+        service._last_catchup_at = now  # type: ignore[reportPrivateUsage]
+
+        await service.poll_user(telegram_user_id=123)
+        await service.poll_user(telegram_user_id=123)
+
         max_client.get_messages.assert_awaited_once_with("chat1", since_message_id=None, limit=50)
 
     async def test_live_message_clears_dirty_chat_marker(self) -> None:

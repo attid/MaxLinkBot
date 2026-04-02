@@ -465,6 +465,81 @@ class TestReconcileService:
             text="[Igor 192875451 22.03.26 22:30]\n[audio]: https://example.com/audio.mp3",
         )
 
+    async def test_send_backfill_message_falls_back_to_file_name_when_document_has_no_url(
+        self,
+    ) -> None:
+        repos = MockRepos()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=500)
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+        )
+
+        await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "0",
+                "type": "document",
+                "file_name": "crash.txt",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 4, 2, 18, 4, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        repos.telegram.send_text_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=200,
+            text="[Igor 192875451 02.04.26 18:04]\n[file]: crash.txt",
+        )
+
+    async def test_send_backfill_message_includes_text_in_photo_caption(self) -> None:
+        repos = MockRepos()
+        repos.telegram.send_photo_to_topic = AsyncMock(return_value=500)
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+        )
+
+        await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "109283159",
+                "type": "photo",
+                "media_url": "https://example.com/image.jpg",
+                "text": "Кроме как здесь, не знаю как общаться.",
+                "sender_name": "Ирина",
+                "sender_id": 109283159,
+                "time": int(datetime(2026, 3, 20, 15, 50, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        repos.telegram.send_photo_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=200,
+            photo_url="https://example.com/image.jpg",
+            caption=(
+                "[Ирина 109283159 20.03.26 15:50]\n"
+                "Кроме как здесь, не знаю как общаться."
+            ),
+        )
+
     async def test_backfill_continues_after_single_message_failure(self) -> None:
         repos = MockRepos()
         sleep = AsyncMock()

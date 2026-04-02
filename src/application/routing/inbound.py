@@ -49,6 +49,7 @@ class InboundSyncService:
         shared_runtime: MaxClientRuntimeRegistry | None = None,
         reconnect_storm_threshold: int = 5,
         reconnect_storm_window_seconds: float = 300.0,
+        dirty_chat_poll_min_interval_seconds: float = 5.0,
         time_func: Callable[[], float] | None = None,
     ) -> None:
         self._binding_repo = binding_repo
@@ -64,8 +65,10 @@ class InboundSyncService:
         self._shared_runtime = shared_runtime
         self._reconnect_storm_threshold = reconnect_storm_threshold
         self._reconnect_storm_window_seconds = reconnect_storm_window_seconds
+        self._dirty_chat_poll_min_interval_seconds = dirty_chat_poll_min_interval_seconds
         self._time_func = time_func or time.time
         self._recent_reconnects: deque[float] = deque()
+        self._last_dirty_poll_at: dict[str, float] = {}
         self._live_client: MaxClient | None = None
         self._live_session_owner_id: int | None = None
         self._live_session_data: str | None = None
@@ -97,8 +100,19 @@ class InboundSyncService:
 
         if self._shared_runtime is not None:
             dirty_chat_ids = await self._shared_runtime.get_dirty_chats(telegram_user_id)
+            now = self._time_func()
             for max_chat_id in dirty_chat_ids:
-                await self._poll_chat_with_client(telegram_user_id, max_chat_id, max_client)
+                if not self._should_poll_dirty_chat(max_chat_id, now):
+                    continue
+                self._last_dirty_poll_at[max_chat_id] = now
+                delivered = await self._poll_chat_with_client(
+                    telegram_user_id,
+                    max_chat_id,
+                    max_client,
+                )
+                if delivered:
+                    await self._shared_runtime.clear_dirty_chat(telegram_user_id, max_chat_id)
+                    self._last_dirty_poll_at.pop(max_chat_id, None)
 
         now = time.time()
         if self._last_catchup_at is None or (
@@ -128,6 +142,7 @@ class InboundSyncService:
         self._live_session_owner_id = None
         self._live_session_data = None
         self._last_catchup_at = None
+        self._last_dirty_poll_at.clear()
 
     async def _ensure_live_client(self, session_owner_id: int, session_data: str) -> MaxClient:
         if self._shared_runtime is not None:
@@ -233,6 +248,7 @@ class InboundSyncService:
         if delivered:
             if self._shared_runtime is not None:
                 await self._shared_runtime.clear_dirty_chat(telegram_user_id, max_chat_id)
+            self._last_dirty_poll_at.pop(max_chat_id, None)
             await self._cursor_repo.upsert(
                 SyncCursor(
                     max_chat_id=max_chat_id,
@@ -339,6 +355,7 @@ class InboundSyncService:
         )
         media_url = str(msg.get("media_url") or "").strip()
         prefix = self._render_prefix(msg)
+        media_caption = self._compose_media_caption(prefix, msg.get("text"))
 
         if msg_type in {"photo", "image"} and media_url:
             try:
@@ -346,7 +363,7 @@ class InboundSyncService:
                     chat_id=telegram_user_id,
                     topic_id=topic_id,
                     photo_url=media_url,
-                    caption=prefix,
+                    caption=media_caption,
                 )
             except TelegramBadRequest as exc:
                 if self._should_fallback_from_media_url(exc):
@@ -362,7 +379,7 @@ class InboundSyncService:
                     chat_id=telegram_user_id,
                     topic_id=topic_id,
                     audio_url=media_url,
-                    caption=prefix,
+                    caption=media_caption,
                 )
             except TelegramBadRequest as exc:
                 if self._should_fallback_from_media_url(exc):
@@ -380,7 +397,7 @@ class InboundSyncService:
                     topic_id=topic_id,
                     document_url=media_url,
                     filename=file_name,
-                    caption=prefix,
+                    caption=media_caption,
                 )
             except TelegramBadRequest as exc:
                 if self._should_fallback_from_media_url(exc):
@@ -390,6 +407,13 @@ class InboundSyncService:
                         text=f"{prefix}\n[file]: {media_url}",
                     )
                 raise
+        if msg_type in {"document", "file"}:
+            file_name = str(msg.get("file_name") or "file.bin").strip() or "file.bin"
+            return await self._telegram.send_text_to_topic(
+                chat_id=telegram_user_id,
+                topic_id=topic_id,
+                text=f"{prefix}\n[file]: {file_name}",
+            )
 
         text = self._render_message(msg)
         return await self._telegram.send_text_to_topic(
@@ -417,6 +441,18 @@ class InboundSyncService:
         description = self._normalize_rendered_description(msg_type, msg.get("description"))
         body = f"[{msg_type}]: {description}"
         return f"{prefix}\n{body}".strip()
+
+    def _compose_media_caption(self, prefix: str, text: object) -> str:
+        text_body = str(text or "").strip()
+        if not text_body:
+            return prefix
+        return f"{prefix}\n{text_body}"
+
+    def _should_poll_dirty_chat(self, max_chat_id: str, now: float) -> bool:
+        last_polled_at = self._last_dirty_poll_at.get(max_chat_id)
+        if last_polled_at is None:
+            return True
+        return (now - last_polled_at) >= self._dirty_chat_poll_min_interval_seconds
 
     def _render_prefix(self, msg: dict[str, Any]) -> str:
         sender_name = str(msg.get("sender_name") or "Unknown").strip()
@@ -452,15 +488,15 @@ class InboundSyncService:
         text_body = str(raw_text or "").strip()
         chat_id = str(raw_chat_id or "").strip()
 
-        if text_body:
-            return "text"
-        if chat_id == "0" and normalized_type == "user":
-            return "media"
-
         if normalized_type in {"photo", "image", "picture"}:
             return "image"
         if normalized_type in {"video", "gif", "sticker", "file", "audio", "voice", "document"}:
             return normalized_type
+
+        if text_body:
+            return "text"
+        if chat_id == "0" and normalized_type == "user":
+            return "media"
         if normalized_type != "unknown":
             return normalized_type
 

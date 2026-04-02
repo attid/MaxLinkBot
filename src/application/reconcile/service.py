@@ -362,6 +362,7 @@ class RefreshReconcileService:
         )
         media_url = str(msg.get("media_url") or "").strip()
         prefix = self._render_backfill_prefix(msg)
+        media_caption = self._compose_media_caption(prefix, msg.get("text"))
 
         if msg_type in {"photo", "image"} and media_url:
             try:
@@ -370,7 +371,7 @@ class RefreshReconcileService:
                         chat_id=telegram_user_id,
                         topic_id=topic_id,
                         photo_url=media_url,
-                        caption=prefix,
+                        caption=media_caption,
                     ),
                     telegram_user_id=telegram_user_id,
                     topic_id=topic_id,
@@ -390,7 +391,7 @@ class RefreshReconcileService:
                         chat_id=telegram_user_id,
                         topic_id=topic_id,
                         audio_url=media_url,
-                        caption=prefix,
+                        caption=media_caption,
                     ),
                     telegram_user_id=telegram_user_id,
                     topic_id=topic_id,
@@ -412,7 +413,7 @@ class RefreshReconcileService:
                         topic_id=topic_id,
                         document_url=media_url,
                         filename=file_name,
-                        caption=prefix,
+                        caption=media_caption,
                     ),
                     telegram_user_id=telegram_user_id,
                     topic_id=topic_id,
@@ -425,6 +426,17 @@ class RefreshReconcileService:
                         text=f"{prefix}\n[file]: {media_url}",
                     )
                 raise
+        if msg_type in {"document", "file"}:
+            file_name = str(msg.get("file_name") or "file.bin").strip() or "file.bin"
+            return await self._retry_topic_send(
+                lambda: self._telegram.send_text_to_topic(
+                    chat_id=telegram_user_id,
+                    topic_id=topic_id,
+                    text=f"{prefix}\n[file]: {file_name}",
+                ),
+                telegram_user_id=telegram_user_id,
+                topic_id=topic_id,
+            )
 
         text = self._render_backfill_message(msg)
         return await self._retry_topic_send(
@@ -481,6 +493,12 @@ class RefreshReconcileService:
             body = f"[{msg_type}]: {description}"
         return f"{prefix}\n{body}".strip()
 
+    def _compose_media_caption(self, prefix: str, text: object) -> str:
+        text_body = str(text or "").strip()
+        if not text_body:
+            return prefix
+        return f"{prefix}\n{text_body}"
+
     def _render_backfill_prefix(self, msg: dict[str, object]) -> str:
         sender_name = str(msg.get("sender_name") or "Unknown").strip()
         sender_id = str(msg.get("sender_id") or "UnknownID").strip()
@@ -504,15 +522,15 @@ class RefreshReconcileService:
         text_body = str(raw_text or "").strip()
         chat_id = str(raw_chat_id or "").strip()
 
-        if text_body:
-            return "text"
-        if chat_id == "0" and normalized_type == "user":
-            return "media"
-
         if normalized_type in {"photo", "image", "picture"}:
             return "image"
         if normalized_type in {"video", "gif", "sticker", "file", "audio", "voice", "document"}:
             return normalized_type
+
+        if text_body:
+            return "text"
+        if chat_id == "0" and normalized_type == "user":
+            return "media"
         if normalized_type != "unknown":
             return normalized_type
 
