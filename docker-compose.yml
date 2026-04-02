@@ -15,7 +15,7 @@ services:
     volumes:
       - maxlinkbot-data:/data
     healthcheck:
-      test: ["CMD", "/app/.venv/bin/python", "-m", "src.healthcheck"]
+      test: ["CMD", "/app/scripts/healthcheck.sh"]
       interval: 30s
       timeout: 10s
       retries: 3

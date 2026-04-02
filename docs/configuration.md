@@ -64,7 +64,7 @@ DATABASE_URL="sqlite+aiosqlite://:memory:"
 
 ## Runtime Healthcheck
 
-Container health is not process-liveness only. The bot writes an unhealthy marker file when inbound runtime degrades, for example on a reconnect storm, and also updates a heartbeat file during each background poll cycle. Docker healthcheck treats the container as unhealthy when `RUNTIME_UNHEALTHY_MARKER_PATH` exists or the heartbeat becomes stale.
+Container health is not process-liveness only. The bot writes an unhealthy marker file when inbound runtime degrades, for example on a reconnect storm, and also updates a heartbeat file during each background poll cycle. Docker healthcheck uses a lightweight shell script at `/app/scripts/healthcheck.sh` and treats the container as unhealthy when `RUNTIME_UNHEALTHY_MARKER_PATH` exists or the heartbeat becomes stale.
 
 ## Decision: No Secrets in Env Defaults
 
