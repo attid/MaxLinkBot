@@ -174,6 +174,25 @@ def register_handlers(
                     await message.answer("MAX session invalid. Send /start to re-authorize.")
                 return
 
+            if message.document:
+                document = message.document
+                file = await message.bot.get_file(document.file_id)
+                buffer = io.BytesIO()
+                await message.bot.download_file(file.file_path, destination=buffer)
+                fallback_name = f"{document.file_id}.bin"
+                filename = document.file_name or Path(file.file_path or fallback_name).name or fallback_name
+                try:
+                    await outbound_service.deliver_file(
+                        telegram_user_id=telegram_user_id,
+                        telegram_topic_id=message.message_thread_id or 0,
+                        file_bytes=buffer.getvalue(),
+                        filename=filename,
+                        caption=message.caption or "",
+                    )
+                except AuthError:
+                    await message.answer("MAX session invalid. Send /start to re-authorize.")
+                return
+
             text = message.text
             if not text:
                 return

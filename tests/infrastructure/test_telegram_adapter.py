@@ -52,6 +52,32 @@ async def test_send_audio_to_topic_reraises_when_download_fails_after_url_reject
     bot.send_audio.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_send_document_to_topic_downloads_and_uploads() -> None:
+    bot = MagicMock()
+    bot.send_document = AsyncMock(return_value=MagicMock(message_id=321))
+
+    adapter = AiogramTelegramAdapter(bot)
+    adapter._download_file_bytes = AsyncMock(return_value=b"document-bytes")  # type: ignore[attr-defined]
+
+    message_id = await adapter.send_document_to_topic(
+        chat_id=1,
+        topic_id=2,
+        document_url="https://example.com/spec.pdf",
+        filename="spec.pdf",
+        caption="[Igor 1 22.03.26 22:30]",
+    )
+
+    assert message_id == 321
+    adapter._download_file_bytes.assert_awaited_once_with("https://example.com/spec.pdf")  # type: ignore[attr-defined]
+    bot.send_document.assert_awaited_once()
+    send_call = bot.send_document.await_args_list[0]
+    assert send_call.kwargs["chat_id"] == 1
+    assert send_call.kwargs["message_thread_id"] == 2
+    assert send_call.kwargs["caption"] == "[Igor 1 22.03.26 22:30]"
+    assert isinstance(send_call.kwargs["document"], BufferedInputFile)
+
+
 def test_download_header_profiles_prefers_opera_android_for_chrome_opera_mobile() -> None:
     adapter = AiogramTelegramAdapter(MagicMock())
 

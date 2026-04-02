@@ -22,7 +22,7 @@ from typing import Any
 
 import qrcode
 from pymax import MaxClient
-from pymax.files import Photo
+from pymax.files import File, Photo
 from pymax.payloads import UserAgentPayload
 
 from src.application.auth.exceptions import AuthError
@@ -43,6 +43,8 @@ class PymaxMessage:
     time: int
     type: str
     description: str
+    media_url: str | None = None
+    file_name: str | None = None
 
 
 class PymaxAdapter(MaxClientPort):
@@ -122,7 +124,7 @@ class PymaxAdapter(MaxClientPort):
             if since is not None and mid <= since:
                 continue
             sender_id = self._extract_sender_id(m)
-            media_type, media_url = self._extract_media_metadata(m)
+            media_type, media_url, file_name = self._extract_media_metadata(m)
             raw_description = getattr(m, "description", None)
             description = raw_description.strip() if isinstance(raw_description, str) else ""
             result.append(
@@ -140,6 +142,7 @@ class PymaxAdapter(MaxClientPort):
                     ),
                     "description": description,
                     "media_url": media_url,
+                    "file_name": file_name,
                 }
             )
         logger.info(
@@ -215,7 +218,7 @@ class PymaxAdapter(MaxClientPort):
         except (TypeError, ValueError):
             return 0
 
-    def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None]:
+    def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None, str | None]:
         attaches = getattr(message, "attaches", None)
         if not isinstance(attaches, (list, tuple)):
             attaches = []
@@ -235,16 +238,27 @@ class PymaxAdapter(MaxClientPort):
             if type_name == "photo":
                 base_url = getattr(attach, "base_url", None)
                 if isinstance(base_url, str) and base_url.strip():
-                    return "photo", base_url.strip()
+                    return "photo", base_url.strip(), None
             if type_name in {"audio", "voice"}:
                 url = getattr(attach, "url", None)
                 if isinstance(url, str) and url.strip():
-                    return "audio", url.strip()
+                    return "audio", url.strip(), self._extract_attach_filename(attach)
             if type_name == "video":
                 url = getattr(attach, "url", None)
                 if isinstance(url, str) and url.strip():
-                    return "video", url.strip()
-        return None, None
+                    return "video", url.strip(), self._extract_attach_filename(attach)
+            if type_name in {"file", "document"}:
+                url = getattr(attach, "url", None)
+                if isinstance(url, str) and url.strip():
+                    return "document", url.strip(), self._extract_attach_filename(attach)
+        return None, None, None
+
+    def _extract_attach_filename(self, attach: Any) -> str | None:
+        for attr_name in ("file_name", "filename", "name", "title"):
+            value = getattr(attach, attr_name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
 
     async def _resolve_user_display_name(self, user_id: int) -> str | None:
         cached = self._user_cache.get(user_id)
@@ -331,6 +345,30 @@ class PymaxAdapter(MaxClientPort):
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
 
+    async def send_file(
+        self,
+        max_chat_id: str,
+        file_bytes: bytes,
+        filename: str,
+        caption: str,
+    ) -> str:
+        suffix = Path(filename).suffix or ".bin"
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(file_bytes)
+                temp_path = Path(temp_file.name)
+
+            msg = await self._client.send_message(
+                text=caption,
+                chat_id=int(max_chat_id),
+                attachment=File(path=str(temp_path)),
+            )
+            return str(msg.id) if msg else ""
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
     def _normalize_photo_suffix(self, filename: str) -> str:
         suffix = Path(filename).suffix.lower()
         if suffix in Photo.ALLOWED_EXTENSIONS:
@@ -359,6 +397,8 @@ class PymaxAdapter(MaxClientPort):
                     "time": message.time,
                     "type": message.type or "text",
                     "description": message.description,
+                    "media_url": message.media_url,
+                    "file_name": message.file_name,
                 }
             )
 
@@ -478,6 +518,7 @@ class PymaxAdapter(MaxClientPort):
     async def _buffer_message(self, msg: Any) -> None:
         raw_type = getattr(msg, "type", None)
         normalized_type = self._normalize_live_message_type(raw_type, getattr(msg, "text", None))
+        media_type, media_url, file_name = self._extract_media_metadata(msg)
         async with self._lock:
             self._buffer.append(
                 PymaxMessage(
@@ -487,8 +528,10 @@ class PymaxAdapter(MaxClientPort):
                     sender_id=getattr(msg, "sender_id", None) or 0,
                     sender=getattr(msg, "sender", None) or "",
                     time=getattr(msg, "time", None) or 0,
-                    type=normalized_type,
+                    type=media_type or normalized_type,
                     description=str(getattr(msg, "description", None) or ""),
+                    media_url=media_url,
+                    file_name=file_name,
                 )
             )
         logger.info(

@@ -119,6 +119,42 @@ class AiogramTelegramAdapter(TelegramClient):
             ) from exc
         return msg.message_id  # type: ignore[return-value]
 
+    async def send_document_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        document_url: str,
+        filename: str,
+        caption: str,
+    ) -> int:
+        logger.info(
+            "telegram send_document_to_topic chat_id=%s topic_id=%s url_len=%s caption_len=%s",
+            chat_id,
+            topic_id,
+            len(document_url),
+            len(caption),
+        )
+        try:
+            document_bytes = await self._download_file_bytes(document_url)
+            msg = await self._bot.send_document(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                document=BufferedInputFile(document_bytes, filename=filename),
+                caption=caption,
+            )
+        except Exception as exc:
+            logger.warning(
+                "telegram send_document_to_topic file upload preparation failed chat_id=%s topic_id=%s",
+                chat_id,
+                topic_id,
+                exc_info=True,
+            )
+            raise TelegramBadRequest(
+                method=self._bot.send_document,
+                message="failed to get HTTP URL content",
+            ) from exc
+        return msg.message_id  # type: ignore[return-value]
+
     async def send_photo(self, chat_id: int, image_bytes: bytes) -> int:
         msg = await self._bot.send_photo(
             chat_id=chat_id,

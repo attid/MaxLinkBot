@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pymax.files import File
 
 from src.application.auth.exceptions import AuthError
 from src.infrastructure.max.adapter import PymaxAdapter
@@ -84,6 +85,7 @@ async def test_get_messages_returns_max_message_id_key() -> None:
             "type": "text",
             "description": "",
             "media_url": None,
+            "file_name": None,
         }
     ]
 
@@ -258,6 +260,42 @@ async def test_get_messages_extracts_audio_attach_url_from_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_messages_extracts_document_attach_url_and_filename_from_history() -> None:
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = ""
+    raw_message.sender = 7
+    raw_message.sender_id = None
+    raw_message.time = 123
+    raw_message.type = "USER"
+    raw_message.description = None
+    raw_message.attaches = [
+        SimpleNamespace(
+            type=SimpleNamespace(name="DOCUMENT", value="DOCUMENT"),
+            url="https://example.com/spec.pdf",
+            file_name="spec.pdf",
+        )
+    ]
+
+    user = SimpleNamespace(
+        names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")]
+    )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "document"
+    assert messages[0]["media_url"] == "https://example.com/spec.pdf"
+    assert messages[0]["file_name"] == "spec.pdf"
+
+
+@pytest.mark.asyncio
 async def test_send_photo_uses_temp_file_attachment() -> None:
     sent_message = SimpleNamespace(id=99)
     client = MagicMock()
@@ -278,6 +316,31 @@ async def test_send_photo_uses_temp_file_attachment() -> None:
     assert send_call.kwargs["chat_id"] == 100
     attachment = send_call.kwargs["attachment"]
     assert attachment.file_name.endswith(".png")
+    assert not os.path.exists(attachment.path)
+
+
+@pytest.mark.asyncio
+async def test_send_file_uses_temp_file_attachment() -> None:
+    sent_message = SimpleNamespace(id=100)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=sent_message)
+
+    adapter = PymaxAdapter(client)
+
+    result = await adapter.send_file(
+        "100",
+        b"file-bytes",
+        "spec.pdf",
+        "Spec caption",
+    )
+
+    assert result == "100"
+    send_call = client.send_message.await_args
+    assert send_call.kwargs["text"] == "Spec caption"
+    assert send_call.kwargs["chat_id"] == 100
+    attachment = send_call.kwargs["attachment"]
+    assert isinstance(attachment, File)
+    assert attachment.path.endswith(".pdf")
     assert not os.path.exists(attachment.path)
 
 

@@ -250,3 +250,49 @@ class TestOutboundSyncService:
         max_client.close.assert_called_once()
         repos.message_link_repo.save.assert_called_once()
         repos.audit_repo.log.assert_called_once()
+
+    async def test_deliver_file_success_sends_and_records(self) -> None:
+        repos = MockRepos()
+        mock_binding = MagicMock()
+        repos.binding_repo.get = AsyncMock(return_value=mock_binding)
+
+        mock_topic = MagicMock()
+        mock_topic.max_chat_id = "max_chat_abc"
+        repos.topic_repo.get_by_user_and_topic = AsyncMock(return_value=mock_topic)
+
+        repos.message_link_repo.save = AsyncMock()
+        repos.audit_repo.log = AsyncMock()
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.send_file = AsyncMock(return_value="max_msg_file")
+        max_client.close = AsyncMock()
+
+        def factory(_uid: int, _phone: str) -> MagicMock:
+            return max_client
+
+        service = OutboundSyncService(
+            binding_repo=repos.binding_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            audit_repo=repos.audit_repo,
+            max_client_factory=factory,
+        )
+
+        result = await service.deliver_file(
+            telegram_user_id=123,
+            telegram_topic_id=50,
+            file_bytes=b"file-bytes",
+            filename="spec.pdf",
+            caption="Spec caption",
+        )
+
+        assert result == "max_msg_file"
+        max_client.send_file.assert_called_once_with(
+            "max_chat_abc",
+            b"file-bytes",
+            "spec.pdf",
+            "Spec caption",
+        )
+        max_client.close.assert_called_once()
+        repos.message_link_repo.save.assert_called_once()
+        repos.audit_repo.log.assert_called_once()

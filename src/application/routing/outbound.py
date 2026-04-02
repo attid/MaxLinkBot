@@ -181,3 +181,67 @@ class OutboundSyncService:
         )
 
         return max_msg_id
+
+    async def deliver_file(
+        self,
+        telegram_user_id: int,
+        telegram_topic_id: int,
+        file_bytes: bytes,
+        filename: str,
+        caption: str = "",
+    ) -> str:
+        """Deliver a Telegram topic document/file to its mapped MAX chat."""
+        binding, topic = await self._resolve_binding_and_topic(telegram_user_id, telegram_topic_id)
+
+        max_client: MaxClient | None = None
+        try:
+            if self._shared_runtime is not None:
+                max_client = await self._shared_runtime.get_client(
+                    binding.telegram_user_id,
+                    binding.max_session_data,
+                )
+            else:
+                max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+                await max_client.start()  # type: ignore[attr-defined]
+            max_msg_id = await max_client.send_file(
+                topic.max_chat_id,
+                file_bytes,
+                filename,
+                caption,
+            )
+        except AuthError:
+            raise
+        except Exception as exc:
+            await self._audit_repo.log(
+                telegram_user_id,
+                AuditEventType.DELIVERY_FAILED,
+                f"Outbound file delivery failed: {exc}",
+            )
+            raise
+        finally:
+            if max_client is not None and self._shared_runtime is None:
+                await max_client.close()
+
+        await self._message_link_repo.save(
+            MessageLink(
+                max_message_id=max_msg_id,
+                telegram_message_id=None,
+                telegram_user_id=telegram_user_id,
+                max_chat_id=topic.max_chat_id,
+                direction=Direction.TELEGRAM_TO_MAX,
+                delivered_at=int(time.time()),
+            )
+        )
+        if self._shared_runtime is not None:
+            await self._shared_runtime.mark_chat_dirty(
+                binding.telegram_user_id,
+                topic.max_chat_id,
+            )
+
+        await self._audit_repo.log(
+            telegram_user_id,
+            AuditEventType.DELIVERY_SUCCESS,
+            f"Outbound file delivered to {topic.max_chat_id}",
+        )
+
+        return max_msg_id

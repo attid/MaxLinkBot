@@ -56,6 +56,18 @@ class TelegramClient(ABC):
         ...
 
     @abstractmethod
+    async def send_document_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        document_url: str,
+        filename: str,
+        caption: str,
+    ) -> int:
+        """Send a generic document/file to a specific topic."""
+        ...
+
+    @abstractmethod
     async def topic_exists(self, chat_id: int, topic_id: int) -> bool:
         """Check whether a topic is still writable."""
         ...

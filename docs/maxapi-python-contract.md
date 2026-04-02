@@ -22,11 +22,13 @@ Python import path: `from pymax import MaxClient`
 - `MaxClient.fetch_chats()` may return `ChatType.DIALOG` chats with `title=None`; for those chats the usable identity comes from `participants` and `owner`.
 - `MaxClient.fetch_users()` / `get_cached_user()` return `User` objects whose display names are available via `user.names[]`.
 - `MaxClient.fetch_history()` exposes sender identity as an ID (`sender` / `sender_id`) and message time as an epoch-milliseconds timestamp.
+- `MaxClient.send_message()` supports generic attachments via `attachment=pymax.files.File(...)` in addition to `Photo` and `Video`.
 - For inbound polling, adapter code must not assume that `MaxClient.fetch_history()` is ordered `newest -> oldest`; filtering by cursor has to scan the whole returned batch instead of stopping at the first old message.
 - `MaxClient` supports live inbound handling through message handlers; in this repository the adapter buffers handler events and the application drains them as the primary `MAX -> Telegram` transport.
 - `fetch_history()` remains a fallback catch-up path and should not be used as a high-frequency steady-state polling mechanism for every chat.
 - Human-readable titles for MAX dialogs can be resolved as "the participant whose ID differs from chat.owner".
 - Background/runtime `start()` paths in this repository are restore-only: if `session.db` is missing or `auth.token` is empty, the adapter raises `AuthError` instead of starting a fresh QR login flow in the background.
+- Generic MAX file/document attaches are currently treated in-repo as `type=document` when `attach.type` is `FILE` or `DOCUMENT`, with `attach.url` used as the download source and `attach.file_name`/`filename`/`name`/`title` as filename candidates.
 
 ## Known Unknowns
 

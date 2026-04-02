@@ -288,6 +288,48 @@ class TestInboundSyncService:
             caption="[Igor 192875451 22.03.26 22:30]",
         )
 
+    async def test_deliver_message_sends_document_to_topic_when_media_url_present(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_document_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "document",
+                "media_url": "https://example.com/spec.pdf",
+                "file_name": "spec.pdf",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_document_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            document_url="https://example.com/spec.pdf",
+            filename="spec.pdf",
+            caption="[Igor 192875451 22.03.26 22:30]",
+        )
+
     async def test_deliver_message_falls_back_to_text_when_audio_url_is_rejected(self) -> None:
         repos = MockRepos()
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)

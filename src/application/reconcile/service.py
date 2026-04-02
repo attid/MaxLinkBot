@@ -403,6 +403,28 @@ class RefreshReconcileService:
                         text=f"{prefix}\n[audio]: {media_url}",
                     )
                 raise
+        if msg_type in {"document", "file"} and media_url:
+            file_name = str(msg.get("file_name") or "file.bin").strip() or "file.bin"
+            try:
+                return await self._retry_topic_send(
+                    lambda: self._telegram.send_document_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        document_url=media_url,
+                        filename=file_name,
+                        caption=prefix,
+                    ),
+                    telegram_user_id=telegram_user_id,
+                    topic_id=topic_id,
+                )
+            except TelegramBadRequest as exc:
+                if self._should_fallback_from_media_url(exc):
+                    return await self._telegram.send_text_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        text=f"{prefix}\n[file]: {media_url}",
+                    )
+                raise
 
         text = self._render_backfill_message(msg)
         return await self._retry_topic_send(
