@@ -35,3 +35,9 @@
 - Forwarded text из MAX больше не рендерится как `[user]: Unsupported content`.
 - Forwarded photo/file из MAX доходит в Telegram как поддерживаемый media/document path, а не как unsupported fallback.
 - Обычные не-forwarded text/photo/file сообщения продолжают проходить без регрессий.
+
+## Итог выполнения
+
+- `PymaxAdapter` теперь извлекает renderable content из `message.link.message`, если верхний уровень forwarded-сообщения пустой.
+- Добавлены regression tests для history и live buffered paths.
+- Обновлен integration knowledge doc по `maxapi-python`.
