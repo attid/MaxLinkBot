@@ -30,6 +30,7 @@ Python import path: `from pymax import MaxClient`
 - Background/runtime `start()` paths in this repository are restore-only: if `session.db` is missing or `auth.token` is empty, the adapter raises `AuthError` instead of starting a fresh QR login flow in the background.
 - Generic MAX file/document attaches are currently treated in-repo as `type=document` when `attach.type` is `FILE` or `DOCUMENT`, with `attach.url` used as the download source and `attach.file_name`/`filename`/`name`/`title` as filename candidates.
 - Self-chat (`chat_id=0`) file messages may arrive as `FileAttach(file_id, name, size, token, type=FILE)` without any direct `url`; in that shape the repository can preserve file semantics and filename, but cannot fetch the binary without additional token-to-download resolution.
+- Forwarded / linked MAX messages may expose the actual supported payload under `message.link.message` while the top-level message stays effectively empty (`type=USER`, no text/attaches usable for rendering). Adapter code should preserve top-level sender/time/id metadata, but read content/media metadata from `link.message` when the top level has no renderable content.
 
 ## Known Unknowns
 

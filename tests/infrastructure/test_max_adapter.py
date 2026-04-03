@@ -333,6 +333,78 @@ async def test_get_messages_extracts_document_attach_url_and_filename_from_histo
 
 
 @pytest.mark.asyncio
+async def test_get_messages_uses_linked_forward_text_when_top_level_message_is_empty() -> None:
+    forwarded = SimpleNamespace(
+        text="Пересланный текст",
+        type="TEXT",
+        description=None,
+        attaches=[],
+    )
+    raw_message = MagicMock()
+    raw_message.id = 42
+    raw_message.text = ""
+    raw_message.sender = 7
+    raw_message.sender_id = None
+    raw_message.time = 123
+    raw_message.type = "USER"
+    raw_message.description = None
+    raw_message.attaches = []
+    raw_message.link = SimpleNamespace(type="FORWARD", message=forwarded)
+
+    user = SimpleNamespace(
+        names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")]
+    )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "text"
+    assert messages[0]["text"] == "Пересланный текст"
+
+
+@pytest.mark.asyncio
+async def test_drain_buffered_messages_uses_linked_forward_photo_metadata_when_top_level_message_is_empty() -> None:
+    forwarded = SimpleNamespace(
+        text="",
+        type="USER",
+        description=None,
+        attaches=[
+            SimpleNamespace(
+                type=SimpleNamespace(name="PHOTO", value="PHOTO"),
+                base_url="https://example.com/forwarded.jpg",
+            )
+        ],
+    )
+    raw_message = SimpleNamespace(
+        chat_id=100,
+        id=42,
+        text="",
+        sender_id=7,
+        sender="Petya",
+        time=123,
+        type="USER",
+        description="",
+        attaches=[],
+        link=SimpleNamespace(type="FORWARD", message=forwarded),
+    )
+
+    client = MagicMock()
+    adapter = PymaxAdapter(client)
+
+    await adapter._buffer_message(raw_message)  # type: ignore[reportPrivateUsage]
+    messages = await adapter.drain_buffered_messages()
+
+    assert messages[0]["type"] == "photo"
+    assert messages[0]["media_url"] == "https://example.com/forwarded.jpg"
+
+
+@pytest.mark.asyncio
 async def test_send_photo_uses_temp_file_attachment() -> None:
     sent_message = SimpleNamespace(id=99)
     client = MagicMock()

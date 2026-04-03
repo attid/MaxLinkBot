@@ -123,22 +123,24 @@ class PymaxAdapter(MaxClientPort):
             raw_ids.append(str(m.id))
             if since is not None and mid <= since:
                 continue
+            content = self._select_content_source_message(m)
             sender_id = self._extract_sender_id(m)
-            media_type, media_url, file_name = self._extract_media_metadata(m)
-            raw_description = getattr(m, "description", None)
+            media_type, media_url, file_name = self._extract_media_metadata(content)
+            raw_description = getattr(content, "description", None)
             description = raw_description.strip() if isinstance(raw_description, str) else ""
+            text = getattr(content, "text", None) or ""
             result.append(
                 {
                     "max_message_id": str(m.id),
                     "chat_id": max_chat_id,
-                    "text": getattr(m, "text", None) or "",
+                    "text": text,
                     "sender_id": sender_id,
                     "sender_name": await self._resolve_sender_name(m),
                     "time": getattr(m, "time", None) or 0,
                     "type": media_type
                     or self._normalize_live_message_type(
-                        getattr(m, "type", None),
-                        getattr(m, "text", None),
+                        getattr(content, "type", None),
+                        text,
                     ),
                     "description": description,
                     "media_url": media_url,
@@ -217,6 +219,28 @@ class PymaxAdapter(MaxClientPort):
             return int(sender_id)
         except (TypeError, ValueError):
             return 0
+
+    def _select_content_source_message(self, message: Any) -> Any:
+        if self._message_has_renderable_content(message):
+            return message
+
+        link = getattr(message, "link", None)
+        linked_message = getattr(link, "message", None)
+        if linked_message is not None and self._message_has_renderable_content(linked_message):
+            return linked_message
+        return message
+
+    def _message_has_renderable_content(self, message: Any) -> bool:
+        text = getattr(message, "text", None)
+        if isinstance(text, str) and text.strip():
+            return True
+
+        description = getattr(message, "description", None)
+        if isinstance(description, str) and description.strip():
+            return True
+
+        attaches = getattr(message, "attaches", None)
+        return isinstance(attaches, (list, tuple)) and len(attaches) > 0
 
     def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None, str | None]:
         attaches = getattr(message, "attaches", None)
@@ -519,20 +543,22 @@ class PymaxAdapter(MaxClientPort):
         asyncio.create_task(self._buffer_message(msg))
 
     async def _buffer_message(self, msg: Any) -> None:
-        raw_type = getattr(msg, "type", None)
-        normalized_type = self._normalize_live_message_type(raw_type, getattr(msg, "text", None))
-        media_type, media_url, file_name = self._extract_media_metadata(msg)
+        content = self._select_content_source_message(msg)
+        raw_type = getattr(content, "type", None)
+        text = getattr(content, "text", None) or ""
+        normalized_type = self._normalize_live_message_type(raw_type, text)
+        media_type, media_url, file_name = self._extract_media_metadata(content)
         async with self._lock:
             self._buffer.append(
                 PymaxMessage(
                     chat_id=msg.chat_id,
                     id=int(str(msg.id)),
-                    text=getattr(msg, "text", None) or "",
+                    text=text,
                     sender_id=getattr(msg, "sender_id", None) or 0,
                     sender=getattr(msg, "sender", None) or "",
                     time=getattr(msg, "time", None) or 0,
                     type=media_type or normalized_type,
-                    description=str(getattr(msg, "description", None) or ""),
+                    description=str(getattr(content, "description", None) or ""),
                     media_url=media_url,
                     file_name=file_name,
                 )
@@ -543,7 +569,7 @@ class PymaxAdapter(MaxClientPort):
             getattr(msg, "id", None),
             raw_type,
             normalized_type,
-            bool(getattr(msg, "text", None)),
+            bool(text),
         )
 
     def _normalize_live_message_type(self, raw_type: Any, text: Any) -> str:
