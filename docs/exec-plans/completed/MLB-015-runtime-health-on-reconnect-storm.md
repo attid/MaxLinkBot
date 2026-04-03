@@ -36,3 +36,10 @@
 - reconnect storm переводит runtime в unhealthy;
 - docker healthcheck перестаёт быть always-green и отражает состояние runtime;
 - после стабилизации runtime health status восстанавливается.
+
+## Итог выполнения
+
+- Добавлен runtime health tracker с heartbeat и unhealthy-marker файлами.
+- Inbound/runtime-path теперь переводит контейнер в unhealthy при reconnect storm и stale heartbeat.
+- Container healthcheck переведён на проверку реального runtime health status через shell script.
+- Добавлены regression tests на unhealthy transition и stale heartbeat.

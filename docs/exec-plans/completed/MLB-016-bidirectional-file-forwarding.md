@@ -45,3 +45,10 @@
 - MAX file/document attachment доходит в Telegram topic как document/file, а не как placeholder.
 - `/resync <chat_id>` backfill тоже пересылает file/document вложения.
 - Ошибка на одном file message не валит весь sync/reconcile.
+
+## Итог выполнения
+
+- Добавлена двусторонняя file/document forwarding-поддержка для существующих topic/chat bindings.
+- `Telegram -> MAX`: handler скачивает document bytes, outbound service доставляет файл, `PymaxAdapter` отправляет attachment через временный файл.
+- `MAX -> Telegram`: adapter извлекает file/document metadata из history/live messages, inbound/reconcile отправляют document в topic или используют безопасный fallback.
+- Обновлены docs по file/media contract и ограничениям `maxapi-python`.
