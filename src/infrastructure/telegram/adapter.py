@@ -38,6 +38,8 @@ FIREFOX_ANDROID_HEADERS = {
 }
 
 TELEGRAM_VIDEO_LIMIT_BYTES = 50 * 1024 * 1024
+TELEGRAM_MEDIA_CAPTION_LIMIT = 1024
+TELEGRAM_TEXT_LIMIT = 4096
 
 
 class AiogramTelegramAdapter(TelegramClient):
@@ -78,12 +80,14 @@ class AiogramTelegramAdapter(TelegramClient):
             len(photo_url),
             len(caption),
         )
+        media_caption, continuation_chunks = self._split_media_caption(caption)
         msg = await self._bot.send_photo(
             chat_id=chat_id,
             message_thread_id=topic_id,
             photo=photo_url,
-            caption=caption,
+            caption=media_caption,
         )
+        await self._send_caption_continuations(chat_id, topic_id, continuation_chunks)
         return msg.message_id  # type: ignore[return-value]
 
     async def send_audio_to_topic(
@@ -102,12 +106,6 @@ class AiogramTelegramAdapter(TelegramClient):
         )
         try:
             audio_bytes = await self._download_file_bytes(audio_url)
-            msg = await self._bot.send_audio(
-                chat_id=chat_id,
-                message_thread_id=topic_id,
-                audio=BufferedInputFile(audio_bytes, filename="audio.mp3"),
-                caption=caption,
-            )
         except Exception as exc:
             logger.warning(
                 "telegram send_audio_to_topic file upload preparation failed chat_id=%s topic_id=%s",
@@ -119,6 +117,14 @@ class AiogramTelegramAdapter(TelegramClient):
                 method=self._bot.send_audio,  # type: ignore[reportArgumentType]
                 message="failed to get HTTP URL content",
             ) from exc
+        media_caption, continuation_chunks = self._split_media_caption(caption)
+        msg = await self._bot.send_audio(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            audio=BufferedInputFile(audio_bytes, filename="audio.mp3"),
+            caption=media_caption,
+        )
+        await self._send_caption_continuations(chat_id, topic_id, continuation_chunks)
         return msg.message_id  # type: ignore[return-value]
 
     async def send_video_to_topic(
@@ -147,13 +153,6 @@ class AiogramTelegramAdapter(TelegramClient):
                     f"video size {len(video_bytes)} exceeds Telegram limit "
                     f"{TELEGRAM_VIDEO_LIMIT_BYTES}"
                 )
-            msg = await self._bot.send_video(
-                chat_id=chat_id,
-                message_thread_id=topic_id,
-                video=BufferedInputFile(video_bytes, filename="video.mp4"),
-                caption=caption,
-                supports_streaming=True,
-            )
         except Exception as exc:
             logger.warning(
                 "telegram send_video_to_topic upload preparation failed chat_id=%s topic_id=%s",
@@ -165,6 +164,15 @@ class AiogramTelegramAdapter(TelegramClient):
                 method=self._bot.send_video,  # type: ignore[reportArgumentType]
                 message="failed to get HTTP URL content",
             ) from exc
+        media_caption, continuation_chunks = self._split_media_caption(caption)
+        msg = await self._bot.send_video(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            video=BufferedInputFile(video_bytes, filename="video.mp4"),
+            caption=media_caption,
+            supports_streaming=True,
+        )
+        await self._send_caption_continuations(chat_id, topic_id, continuation_chunks)
         return msg.message_id  # type: ignore[return-value]
 
     async def send_document_to_topic(
@@ -184,12 +192,6 @@ class AiogramTelegramAdapter(TelegramClient):
         )
         try:
             document_bytes = await self._download_file_bytes(document_url)
-            msg = await self._bot.send_document(
-                chat_id=chat_id,
-                message_thread_id=topic_id,
-                document=BufferedInputFile(document_bytes, filename=filename),
-                caption=caption,
-            )
         except Exception as exc:
             logger.warning(
                 "telegram send_document_to_topic file upload preparation failed chat_id=%s topic_id=%s",
@@ -201,6 +203,14 @@ class AiogramTelegramAdapter(TelegramClient):
                 method=self._bot.send_document,  # type: ignore[reportArgumentType]
                 message="failed to get HTTP URL content",
             ) from exc
+        media_caption, continuation_chunks = self._split_media_caption(caption)
+        msg = await self._bot.send_document(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            document=BufferedInputFile(document_bytes, filename=filename),
+            caption=media_caption,
+        )
+        await self._send_caption_continuations(chat_id, topic_id, continuation_chunks)
         return msg.message_id  # type: ignore[return-value]
 
     async def send_photo(self, chat_id: int, image_bytes: bytes) -> int:
@@ -258,6 +268,35 @@ class AiogramTelegramAdapter(TelegramClient):
 
     async def close(self) -> None:
         await self._bot.session.close()
+
+    def _split_media_caption(self, caption: str) -> tuple[str, list[str]]:
+        media_caption = caption[:TELEGRAM_MEDIA_CAPTION_LIMIT]
+        remainder = caption[TELEGRAM_MEDIA_CAPTION_LIMIT:]
+        continuation_chunks = [
+            remainder[offset : offset + TELEGRAM_TEXT_LIMIT]
+            for offset in range(0, len(remainder), TELEGRAM_TEXT_LIMIT)
+        ]
+        return media_caption, continuation_chunks
+
+    async def _send_caption_continuations(
+        self,
+        chat_id: int,
+        topic_id: int,
+        continuation_chunks: list[str],
+    ) -> None:
+        if continuation_chunks:
+            logger.info(
+                "telegram media caption continued chat_id=%s topic_id=%s chunks=%s",
+                chat_id,
+                topic_id,
+                len(continuation_chunks),
+            )
+        for text in continuation_chunks:
+            await self._bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                text=text,
+            )
 
     async def _download_file_bytes(self, url: str) -> bytes:
         last_error: Exception | None = None

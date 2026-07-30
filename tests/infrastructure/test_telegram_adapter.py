@@ -84,6 +84,81 @@ async def test_send_video_to_topic_downloads_small_video_and_uploads() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_video_to_topic_splits_long_caption_without_losing_text() -> None:
+    bot = MagicMock()
+    bot.send_video = AsyncMock(return_value=MagicMock(message_id=456))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=457))
+    caption = "x" * 1617
+
+    adapter = AiogramTelegramAdapter(bot)
+    adapter._probe_remote_file_size = AsyncMock(return_value=1_215_665)  # type: ignore[attr-defined]
+    adapter._download_file_bytes = AsyncMock(return_value=b"video-bytes")  # type: ignore[attr-defined]
+
+    message_id = await adapter.send_video_to_topic(
+        chat_id=1,
+        topic_id=2,
+        video_url="https://example.com/circle.mp4",
+        caption=caption,
+    )
+
+    assert message_id == 456
+    assert bot.send_video.await_args.kwargs["caption"] == caption[:1024]
+    bot.send_message.assert_awaited_once_with(
+        chat_id=1,
+        message_thread_id=2,
+        text=caption[1024:],
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_photo_to_topic_chunks_caption_remainder_by_text_limit() -> None:
+    bot = MagicMock()
+    bot.send_photo = AsyncMock(return_value=MagicMock(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=124))
+    caption = "x" * (1024 + 4096 + 1)
+
+    adapter = AiogramTelegramAdapter(bot)
+
+    message_id = await adapter.send_photo_to_topic(
+        chat_id=1,
+        topic_id=2,
+        photo_url="https://example.com/photo.jpg",
+        caption=caption,
+    )
+
+    assert message_id == 123
+    assert bot.send_photo.await_args.kwargs["caption"] == caption[:1024]
+    assert [call.kwargs["text"] for call in bot.send_message.await_args_list] == [
+        caption[1024 : 1024 + 4096],
+        caption[1024 + 4096 :],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_video_to_topic_preserves_telegram_api_error() -> None:
+    bot = MagicMock()
+    telegram_error = TelegramBadRequest(
+        method=bot.send_video,  # type: ignore[reportArgumentType]
+        message="message caption is too long",
+    )
+    bot.send_video = AsyncMock(side_effect=telegram_error)
+
+    adapter = AiogramTelegramAdapter(bot)
+    adapter._probe_remote_file_size = AsyncMock(return_value=1_215_665)  # type: ignore[attr-defined]
+    adapter._download_file_bytes = AsyncMock(return_value=b"video-bytes")  # type: ignore[attr-defined]
+
+    with pytest.raises(TelegramBadRequest) as raised:
+        await adapter.send_video_to_topic(
+            chat_id=1,
+            topic_id=2,
+            video_url="https://example.com/circle.mp4",
+            caption="short caption",
+        )
+
+    assert raised.value is telegram_error
+
+
+@pytest.mark.asyncio
 async def test_send_video_to_topic_rejects_large_video_before_download() -> None:
     bot = MagicMock()
     bot.send_video = AsyncMock()

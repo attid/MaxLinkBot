@@ -61,6 +61,10 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
 - MAX video delivery to Telegram uses the Bot API `sendVideo` path. Videos up to the
   documented 50 MB limit are downloaded with MAX-compatible headers and uploaded as
   MPEG4; larger videos use an explicit `[video]: URL` fallback without full download.
+- Telegram media captions are limited to 1024 characters. The adapter preserves
+  longer MAX text by sending the first 1024 characters with photo/audio/video/document
+  and the complete remainder as one or more topic messages of at most 4096 characters.
+  Telegram API errors are not rewritten as media download failures.
 - Unknown attachment types are represented by PyMax `UnknownAttachment` instead of
   failing the complete message parse.
 - PyMax 2.3.1 decodes LZ4 payload coefficients and Zstandard payloads.
