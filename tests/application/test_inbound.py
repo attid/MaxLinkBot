@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 from aiogram.exceptions import TelegramBadRequest
@@ -74,7 +74,9 @@ class TestInboundSyncService:
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
@@ -166,7 +168,9 @@ class TestInboundSyncService:
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
@@ -286,10 +290,7 @@ class TestInboundSyncService:
             chat_id=123,
             topic_id=50,
             photo_url="https://example.com/image.jpg",
-            caption=(
-                "[Ирина 109283159 20.03.26 15:50]\n"
-                "Кроме как здесь, не знаю как общаться."
-            ),
+            caption=("[Ирина 109283159 20.03.26 15:50]\nКроме как здесь, не знаю как общаться."),
         )
 
     async def test_deliver_message_sends_audio_to_topic_when_media_url_present(self) -> None:
@@ -330,6 +331,96 @@ class TestInboundSyncService:
             topic_id=50,
             audio_url="https://example.com/audio.mp3",
             caption="[Igor 192875451 22.03.26 22:30]",
+        )
+
+    async def test_deliver_message_sends_video_to_topic_with_caption(self) -> None:
+        repos = MockRepos()
+        repos.telegram = MagicMock()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_video_to_topic = AsyncMock(return_value=101)
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=102)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "video",
+                "media_url": "https://example.com/video.mp4",
+                "text": "Video caption",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_video_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            video_url="https://example.com/video.mp4",
+            caption="[Igor 192875451 22.03.26 22:30]\nVideo caption",
+        )
+        repos.telegram.send_text_to_topic.assert_not_awaited()
+
+    async def test_deliver_message_falls_back_to_video_url_when_upload_is_rejected(self) -> None:
+        repos = MockRepos()
+        repos.telegram = MagicMock()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_video_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=MagicMock(),
+                message="failed to get HTTP URL content",
+            )
+        )
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "0",
+                "type": "video",
+                "media_url": "https://example.com/large.mp4",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.telegram.send_text_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            text="[Igor 192875451 22.03.26 22:30]\n[video]: https://example.com/large.mp4",
         )
 
     async def test_deliver_message_sends_document_to_topic_when_media_url_present(self) -> None:
@@ -500,7 +591,9 @@ class TestInboundSyncService:
         repos.topic_repo.find_by_user = AsyncMock(
             return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.cursor_repo.get = AsyncMock(return_value=None)
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
@@ -536,7 +629,9 @@ class TestInboundSyncService:
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.cursor_repo.get = AsyncMock(return_value=None)
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
@@ -581,7 +676,9 @@ class TestInboundSyncService:
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.cursor_repo.get = AsyncMock(return_value=None)
 
         max_client = MagicMock(start=AsyncMock())
@@ -625,7 +722,9 @@ class TestInboundSyncService:
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
         repos.cursor_repo.upsert = AsyncMock()
@@ -677,7 +776,9 @@ class TestInboundSyncService:
         repos.topic_repo.find_by_user = AsyncMock(
             return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.cursor_repo.get = AsyncMock(return_value=None)
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
@@ -719,7 +820,9 @@ class TestInboundSyncService:
         repos.topic_repo.find_by_user = AsyncMock(
             return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.cursor_repo.get = AsyncMock(return_value=None)
         repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
         repos.message_link_repo.save = AsyncMock()
@@ -756,12 +859,16 @@ class TestInboundSyncService:
         reconcile_user.assert_not_awaited()
         repos.topic_repo.find_by_user.assert_awaited_once_with(123)
 
-    async def test_reconnect_recovery_checks_dirty_chat_first_and_skips_broad_scan_when_found(self) -> None:
+    async def test_reconnect_recovery_checks_dirty_chat_first_and_skips_broad_scan_when_found(
+        self,
+    ) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(
             return_value=MagicMock(telegram_user_id=123, max_session_data="token")
         )
-        repos.topic_repo.get_by_user_and_chat = AsyncMock(return_value=MagicMock(telegram_topic_id=50))
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=MagicMock(telegram_topic_id=50)
+        )
         repos.topic_repo.find_by_user = AsyncMock(
             return_value=[MagicMock(max_chat_id="chat1", telegram_topic_id=50)]
         )

@@ -47,6 +47,17 @@ class TelegramClient(ABC):
         ...
 
     @abstractmethod
+    async def send_video_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        video_url: str,
+        caption: str,
+    ) -> int:
+        """Send a video file to a specific topic."""
+        ...
+
+    @abstractmethod
     async def create_topic(self, chat_id: int, title: str) -> int:
         """Create a new topic in a chat.
 

@@ -53,6 +53,58 @@ async def test_send_audio_to_topic_reraises_when_download_fails_after_url_reject
 
 
 @pytest.mark.asyncio
+async def test_send_video_to_topic_downloads_small_video_and_uploads() -> None:
+    bot = MagicMock()
+    bot.send_video = AsyncMock(return_value=MagicMock(message_id=456))
+
+    adapter = AiogramTelegramAdapter(bot)
+    adapter._probe_remote_file_size = AsyncMock(return_value=1_215_665)  # type: ignore[attr-defined]
+    adapter._download_file_bytes = AsyncMock(return_value=b"video-bytes")  # type: ignore[attr-defined]
+
+    message_id = await adapter.send_video_to_topic(
+        chat_id=1,
+        topic_id=2,
+        video_url="https://example.com/circle.mp4",
+        caption="[Igor 1 22.03.26 22:30]",
+    )
+
+    assert message_id == 456
+    adapter._probe_remote_file_size.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "https://example.com/circle.mp4"
+    )
+    adapter._download_file_bytes.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "https://example.com/circle.mp4"
+    )
+    send_call = bot.send_video.await_args_list[0]
+    assert send_call.kwargs["chat_id"] == 1
+    assert send_call.kwargs["message_thread_id"] == 2
+    assert send_call.kwargs["caption"] == "[Igor 1 22.03.26 22:30]"
+    assert send_call.kwargs["supports_streaming"] is True
+    assert isinstance(send_call.kwargs["video"], BufferedInputFile)
+
+
+@pytest.mark.asyncio
+async def test_send_video_to_topic_rejects_large_video_before_download() -> None:
+    bot = MagicMock()
+    bot.send_video = AsyncMock()
+
+    adapter = AiogramTelegramAdapter(bot)
+    adapter._probe_remote_file_size = AsyncMock(return_value=196_464_264)  # type: ignore[attr-defined]
+    adapter._download_file_bytes = AsyncMock()  # type: ignore[attr-defined]
+
+    with pytest.raises(TelegramBadRequest, match="failed to get HTTP URL content"):
+        await adapter.send_video_to_topic(
+            chat_id=1,
+            topic_id=2,
+            video_url="https://example.com/large.mp4",
+            caption="[Igor 1 22.03.26 22:30]",
+        )
+
+    adapter._download_file_bytes.assert_not_awaited()  # type: ignore[attr-defined]
+    bot.send_video.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_send_document_to_topic_downloads_and_uploads() -> None:
     bot = MagicMock()
     bot.send_document = AsyncMock(return_value=MagicMock(message_id=321))

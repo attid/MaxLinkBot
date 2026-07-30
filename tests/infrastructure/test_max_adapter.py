@@ -17,7 +17,7 @@ from src.infrastructure.max.adapter import PymaxAdapter
 
 
 @pytest.mark.asyncio
-async def test_start_returns_after_on_start_and_keeps_client_running() -> None:
+async def test_close_cancels_running_client_without_concurrent_direct_close() -> None:
     client = MagicMock()
     stop_event = asyncio.Event()
 
@@ -62,7 +62,7 @@ async def test_start_returns_after_on_start_and_keeps_client_running() -> None:
 
     await adapter.close()
 
-    client.close.assert_awaited_once()
+    client.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -350,6 +350,42 @@ async def test_get_messages_extracts_audio_attach_url_from_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_messages_resolves_direct_video_attach_url() -> None:
+    raw_message = SimpleNamespace(
+        id=42,
+        text="Video caption",
+        sender="Petya",
+        sender_id=None,
+        time=123,
+        type="USER",
+        description=None,
+        attaches=[
+            SimpleNamespace(
+                type=SimpleNamespace(name="VIDEO", value="VIDEO"),
+                video_id=777,
+                duration=18000,
+                width=480,
+                height=480,
+            )
+        ],
+    )
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_video_by_id = AsyncMock(
+        return_value=SimpleNamespace(url="https://example.com/video.mp4")
+    )
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("0", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "video"
+    assert messages[0]["media_url"] == "https://example.com/video.mp4"
+    assert messages[0]["file_name"] == "video.mp4"
+    assert messages[0]["text"] == "Video caption"
+    client.get_video_by_id.assert_awaited_once_with(0, 42, 777)
+
+
+@pytest.mark.asyncio
 async def test_get_messages_resolves_file_attach_url_from_history() -> None:
     raw_message = MagicMock()
     raw_message.id = 42
@@ -455,6 +491,51 @@ async def test_get_messages_uses_linked_forward_text_when_top_level_message_is_e
 
     assert messages[0]["type"] == "text"
     assert messages[0]["text"] == "Пересланный текст"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_resolves_dict_linked_video_using_top_level_message_id() -> None:
+    raw_message = SimpleNamespace(
+        id=99,
+        text="",
+        sender="Petya",
+        sender_id=None,
+        time=123,
+        type="USER",
+        description=None,
+        attaches=[],
+        link={
+            "type": "FORWARD",
+            "message": {
+                "id": "77",
+                "text": "Circle caption",
+                "type": "USER",
+                "attaches": [
+                    {
+                        "_type": "VIDEO",
+                        "videoId": 888,
+                        "duration": 18000,
+                        "width": 480,
+                        "height": 480,
+                    }
+                ],
+            },
+        },
+    )
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_video_by_id = AsyncMock(
+        return_value=SimpleNamespace(url="https://example.com/circle.mp4")
+    )
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("0", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "video"
+    assert messages[0]["media_url"] == "https://example.com/circle.mp4"
+    assert messages[0]["file_name"] == "video.mp4"
+    assert messages[0]["text"] == "Circle caption"
+    client.get_video_by_id.assert_awaited_once_with(0, 99, 888)
 
 
 @pytest.mark.asyncio

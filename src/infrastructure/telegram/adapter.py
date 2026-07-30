@@ -37,6 +37,8 @@ FIREFOX_ANDROID_HEADERS = {
     "Referer": "https://max.ru/",
 }
 
+TELEGRAM_VIDEO_LIMIT_BYTES = 50 * 1024 * 1024
+
 
 class AiogramTelegramAdapter(TelegramClient):
     """Adapter wrapping aiogram Bot into the TelegramClient port."""
@@ -114,7 +116,53 @@ class AiogramTelegramAdapter(TelegramClient):
                 exc_info=True,
             )
             raise TelegramBadRequest(
-                method=self._bot.send_audio,
+                method=self._bot.send_audio,  # type: ignore[reportArgumentType]
+                message="failed to get HTTP URL content",
+            ) from exc
+        return msg.message_id  # type: ignore[return-value]
+
+    async def send_video_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        video_url: str,
+        caption: str,
+    ) -> int:
+        logger.info(
+            "telegram send_video_to_topic chat_id=%s topic_id=%s url_len=%s caption_len=%s",
+            chat_id,
+            topic_id,
+            len(video_url),
+            len(caption),
+        )
+        try:
+            remote_size = await self._probe_remote_file_size(video_url)
+            if remote_size is not None and remote_size > TELEGRAM_VIDEO_LIMIT_BYTES:
+                raise ValueError(
+                    f"video size {remote_size} exceeds Telegram limit {TELEGRAM_VIDEO_LIMIT_BYTES}"
+                )
+            video_bytes = await self._download_file_bytes(video_url)
+            if len(video_bytes) > TELEGRAM_VIDEO_LIMIT_BYTES:
+                raise ValueError(
+                    f"video size {len(video_bytes)} exceeds Telegram limit "
+                    f"{TELEGRAM_VIDEO_LIMIT_BYTES}"
+                )
+            msg = await self._bot.send_video(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                video=BufferedInputFile(video_bytes, filename="video.mp4"),
+                caption=caption,
+                supports_streaming=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "telegram send_video_to_topic upload preparation failed chat_id=%s topic_id=%s",
+                chat_id,
+                topic_id,
+                exc_info=True,
+            )
+            raise TelegramBadRequest(
+                method=self._bot.send_video,  # type: ignore[reportArgumentType]
                 message="failed to get HTTP URL content",
             ) from exc
         return msg.message_id  # type: ignore[return-value]
@@ -150,7 +198,7 @@ class AiogramTelegramAdapter(TelegramClient):
                 exc_info=True,
             )
             raise TelegramBadRequest(
-                method=self._bot.send_document,
+                method=self._bot.send_document,  # type: ignore[reportArgumentType]
                 message="failed to get HTTP URL content",
             ) from exc
         return msg.message_id  # type: ignore[return-value]
@@ -215,10 +263,12 @@ class AiogramTelegramAdapter(TelegramClient):
         last_error: Exception | None = None
         for headers in self._download_header_profiles(url):
             try:
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(url) as response:
-                        response.raise_for_status()
-                        return await response.read()
+                async with (
+                    aiohttp.ClientSession(headers=headers) as session,
+                    session.get(url) as response,
+                ):
+                    response.raise_for_status()
+                    return await response.read()
             except aiohttp.ClientResponseError as exc:
                 last_error = exc
                 logger.info(
@@ -231,6 +281,31 @@ class AiogramTelegramAdapter(TelegramClient):
         if last_error is not None:
             raise last_error
         raise RuntimeError("download failed without attempts")
+
+    async def _probe_remote_file_size(self, url: str) -> int | None:
+        last_error: Exception | None = None
+        for headers in self._download_header_profiles(url):
+            request_headers = {**headers, "Range": "bytes=0-0"}
+            try:
+                async with (
+                    aiohttp.ClientSession(headers=request_headers) as session,
+                    session.get(url) as response,
+                ):
+                    response.raise_for_status()
+                    content_range = response.headers.get("Content-Range", "")
+                    total = content_range.rpartition("/")[2]
+                    if total.isdigit():
+                        return int(total)
+                    content_length = response.headers.get("Content-Length", "")
+                    if content_length.isdigit():
+                        return int(content_length)
+                    return None
+            except aiohttp.ClientResponseError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        return None
 
     def _download_header_profiles(self, url: str) -> list[dict[str, str]]:
         src_ag = parse_qs(urlparse(url).query).get("srcAg", [""])[0].upper()

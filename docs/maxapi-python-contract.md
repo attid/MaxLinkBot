@@ -38,6 +38,10 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   handler events and the application drains them as the primary `MAX -> Telegram` transport.
 - `on_start()` runs again after a successful reconnect and is used as the adapter's
   reconnect signal.
+- While `WebClient.start()` is running, shutdown has a single owner: the adapter
+  cancels and awaits that task, and PyMax closes its connection and session store
+  from the task's `CancelledError` path. Calling `WebClient.close()` concurrently
+  can race on the same `aiosqlite` store and hang process shutdown.
 - `fetch_history()` remains a fallback catch-up path and should not be used as a high-frequency steady-state polling mechanism for every chat.
 - Human-readable titles for MAX dialogs can be resolved as "the participant whose ID differs from chat.owner".
 - Background/runtime `start()` paths are restore-only: if `session.db` is missing or
@@ -46,10 +50,22 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   the existing reauth flow handles a rejected migrated token instead of hanging startup.
 - Incoming `FileAttachment` contains `file_id`, name, size and token but no direct URL.
   The adapter resolves a temporary download URL through `WebClient.get_file_by_id()`.
+- Incoming `VideoAttachment` contains `video_id` but no direct URL. The adapter resolves
+  it through `WebClient.get_video_by_id()` using the top-level message ID.
+- In PyMax 2.3 history, forwarded `link.message` may remain a plain camelCase dict
+  instead of a typed model. The adapter supports both dict-shaped and object-shaped
+  linked content and preserves the top-level message ID for video URL resolution.
+- MAX video delivery to Telegram uses the Bot API `sendVideo` path. Videos up to the
+  documented 50 MB limit are downloaded with MAX-compatible headers and uploaded as
+  MPEG4; larger videos use an explicit `[video]: URL` fallback without full download.
 - Unknown attachment types are represented by PyMax `UnknownAttachment` instead of
   failing the complete message parse.
 - PyMax 2.3.1 decodes LZ4 payload coefficients and Zstandard payloads.
-- Forwarded / linked MAX messages may expose the actual supported payload under `message.link.message` while the top-level message stays effectively empty (`type=USER`, no text/attaches usable for rendering). Adapter code should preserve top-level sender/time/id metadata, but read content/media metadata from `link.message` when the top level has no renderable content.
+- Forwarded / linked MAX messages may expose the actual supported payload under
+  `message.link.message` while the top-level message stays effectively empty
+  (`type=USER`, no text/attaches usable for rendering). Adapter code preserves
+  top-level sender/time/id metadata, but reads content/media metadata from either
+  object-shaped or dict-shaped `link.message`.
 
 ## Known Unknowns
 

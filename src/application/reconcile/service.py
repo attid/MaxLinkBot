@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from aiogram.exceptions import TelegramBadRequest
 
@@ -249,7 +249,9 @@ class RefreshReconcileService:
         self, max_chats_raw: list[dict[str, object]], target_max_chat_id: str
     ) -> list[dict[str, object]]:
         exact_matches = [
-            chat for chat in max_chats_raw if str(chat.get("max_chat_id") or "") == target_max_chat_id
+            chat
+            for chat in max_chats_raw
+            if str(chat.get("max_chat_id") or "") == target_max_chat_id
         ]
         if exact_matches:
             return exact_matches
@@ -264,9 +266,7 @@ class RefreshReconcileService:
             raise ValueError(f"MAX chat not found for resync: {target_max_chat_id}")
 
         direct_matches = [
-            chat
-            for chat in participant_matches
-            if len(chat.get("participant_ids", []) or []) <= 2
+            chat for chat in participant_matches if len(chat.get("participant_ids", []) or []) <= 2
         ]
         if len(direct_matches) == 1:
             return direct_matches
@@ -404,6 +404,26 @@ class RefreshReconcileService:
                         text=f"{prefix}\n[audio]: {media_url}",
                     )
                 raise
+        if msg_type == "video" and media_url:
+            try:
+                return await self._retry_topic_send(
+                    lambda: self._telegram.send_video_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        video_url=media_url,
+                        caption=media_caption,
+                    ),
+                    telegram_user_id=telegram_user_id,
+                    topic_id=topic_id,
+                )
+            except TelegramBadRequest as exc:
+                if self._should_fallback_from_media_url(exc):
+                    return await self._telegram.send_text_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        text=f"{prefix}\n[video]: {media_url}",
+                    )
+                raise
         if msg_type in {"document", "file"} and media_url:
             file_name = str(msg.get("file_name") or "file.bin").strip() or "file.bin"
             try:
@@ -536,7 +556,15 @@ class RefreshReconcileService:
 
         if normalized_description in {"photo", "image", "picture"}:
             return "image"
-        if normalized_description in {"video", "gif", "sticker", "file", "audio", "voice", "document"}:
+        if normalized_description in {
+            "video",
+            "gif",
+            "sticker",
+            "file",
+            "audio",
+            "voice",
+            "document",
+        }:
             return normalized_description
         return normalized_type
 

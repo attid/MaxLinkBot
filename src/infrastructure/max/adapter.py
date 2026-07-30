@@ -206,9 +206,15 @@ class PymaxAdapter(MaxClientPort):
                     chat_id=chat_id,
                     message_id=m.id,
                 )
-            raw_description = getattr(content, "description", None)
+            if media_type == "video" and media_url is None:
+                media_url = await self._resolve_video_url(
+                    content,
+                    chat_id=chat_id,
+                    message_id=m.id,
+                )
+            raw_description = self._field(content, "description")
             description = raw_description.strip() if isinstance(raw_description, str) else ""
-            text = getattr(content, "text", None) or ""
+            text = self._field(content, "text") or ""
             result.append(
                 {
                     "max_message_id": str(m.id),
@@ -219,7 +225,7 @@ class PymaxAdapter(MaxClientPort):
                     "time": getattr(m, "time", None) or 0,
                     "type": media_type
                     or self._normalize_live_message_type(
-                        getattr(content, "type", None),
+                        self._field(content, "type"),
                         text,
                     ),
                     "description": description,
@@ -301,35 +307,35 @@ class PymaxAdapter(MaxClientPort):
         if self._message_has_renderable_content(message):
             return message
 
-        link = getattr(message, "link", None)
-        linked_message = getattr(link, "message", None)
+        link = self._field(message, "link")
+        linked_message = self._field(link, "message")
         if linked_message is not None and self._message_has_renderable_content(linked_message):
             return linked_message
         return message
 
     def _message_has_renderable_content(self, message: Any) -> bool:
-        text = getattr(message, "text", None)
+        text = self._field(message, "text")
         if isinstance(text, str) and text.strip():
             return True
 
-        description = getattr(message, "description", None)
+        description = self._field(message, "description")
         if isinstance(description, str) and description.strip():
             return True
 
-        raw_attaches = getattr(message, "attaches", None)
+        raw_attaches = self._field(message, "attaches")
         if not isinstance(raw_attaches, (list, tuple)):
             return False
         attaches = cast(list[Any] | tuple[Any, ...], raw_attaches)
         return bool(attaches)
 
     def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None, str | None]:
-        raw_attaches = getattr(message, "attaches", None)
+        raw_attaches = self._field(message, "attaches")
         if isinstance(raw_attaches, (list, tuple)):
             attaches = list(cast(list[Any] | tuple[Any, ...], raw_attaches))
         else:
             attaches = []
         for attach in attaches:
-            attach_type = getattr(attach, "type", None)
+            attach_type = self._field(attach, "type", "_type")
             type_name = ""
             if isinstance(attach_type, str):
                 type_name = attach_type.strip().lower()
@@ -342,19 +348,20 @@ class PymaxAdapter(MaxClientPort):
                     type_name = value.strip().lower()
 
             if type_name == "photo":
-                base_url = getattr(attach, "base_url", None)
+                base_url = self._field(attach, "base_url", "baseUrl")
                 if isinstance(base_url, str) and base_url.strip():
                     return "photo", base_url.strip(), None
             if type_name in {"audio", "voice"}:
-                url = getattr(attach, "url", None)
+                url = self._field(attach, "url")
                 if isinstance(url, str) and url.strip():
                     return "audio", url.strip(), self._extract_attach_filename(attach)
             if type_name == "video":
-                url = getattr(attach, "url", None)
+                url = self._field(attach, "url")
                 if isinstance(url, str) and url.strip():
                     return "video", url.strip(), self._extract_attach_filename(attach)
+                return "video", None, "video.mp4"
             if type_name in {"file", "document"}:
-                url = getattr(attach, "url", None)
+                url = self._field(attach, "url")
                 file_name = self._extract_attach_filename(attach)
                 if isinstance(url, str) and url.strip():
                     return "document", url.strip(), file_name
@@ -363,8 +370,8 @@ class PymaxAdapter(MaxClientPort):
         return None, None, None
 
     def _extract_attach_filename(self, attach: Any) -> str | None:
-        for attr_name in ("file_name", "filename", "name", "title"):
-            value = getattr(attach, attr_name, None)
+        for attr_name in ("file_name", "fileName", "filename", "name", "title"):
+            value = self._field(attach, attr_name)
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
@@ -375,19 +382,19 @@ class PymaxAdapter(MaxClientPort):
         chat_id: int,
         message_id: int | str,
     ) -> str | None:
-        raw_attaches = getattr(message, "attaches", None)
+        raw_attaches = self._field(message, "attaches")
         if not isinstance(raw_attaches, (list, tuple)):
             return None
 
         for attach in cast(list[Any] | tuple[Any, ...], raw_attaches):
-            attach_type = getattr(attach, "type", None)
+            attach_type = self._field(attach, "type", "_type")
             type_name = getattr(attach_type, "value", attach_type)
             if not isinstance(type_name, str) or type_name.strip().lower() not in {
                 "file",
                 "document",
             }:
                 continue
-            file_id = getattr(attach, "file_id", None)
+            file_id = self._field(attach, "file_id", "fileId")
             if not isinstance(file_id, int):
                 return None
             with suppress(Exception):
@@ -401,6 +408,45 @@ class PymaxAdapter(MaxClientPort):
                     return url.strip()
             return None
         return None
+
+    async def _resolve_video_url(
+        self,
+        message: Any,
+        chat_id: int,
+        message_id: int | str,
+    ) -> str | None:
+        raw_attaches = self._field(message, "attaches")
+        if not isinstance(raw_attaches, (list, tuple)):
+            return None
+
+        for attach in cast(list[Any] | tuple[Any, ...], raw_attaches):
+            attach_type = self._field(attach, "type", "_type")
+            type_name = getattr(attach_type, "value", attach_type)
+            if not isinstance(type_name, str) or type_name.strip().lower() != "video":
+                continue
+            video_id = self._field(attach, "video_id", "videoId")
+            if not isinstance(video_id, int):
+                return None
+            with suppress(Exception):
+                video_request = await self._client.get_video_by_id(
+                    chat_id,
+                    message_id,
+                    video_id,
+                )
+                url = getattr(video_request, "url", None)
+                if isinstance(url, str) and url.strip():
+                    return url.strip()
+            return None
+        return None
+
+    def _field(self, value: Any, name: str, *aliases: str) -> Any:
+        if isinstance(value, dict):
+            mapping = cast(dict[str, Any], value)
+            for key in (name, *aliases):
+                if key in mapping:
+                    return mapping[key]
+            return None
+        return getattr(value, name, None)
 
     async def _resolve_user_display_name(self, user_id: int) -> str | None:
         cached = self._user_cache.get(user_id)
@@ -547,15 +593,16 @@ class PymaxAdapter(MaxClientPort):
         return self._started
 
     async def close(self) -> None:
-        with suppress(Exception):
-            await self._client.close()
-        if self._client_task is not None:
+        if self._client_task is None:
+            with suppress(Exception):
+                await self._client.close()
+        else:
+            if not self._client_task.done():
+                self._client_task.cancel()
             try:
                 await asyncio.wait_for(self._client_task, timeout=5.0)
             except TimeoutError:
-                self._client_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await self._client_task
+                logger.warning("max client task did not stop within timeout")
             except asyncio.CancelledError:
                 pass
             self._client_task = None
@@ -677,12 +724,18 @@ class PymaxAdapter(MaxClientPort):
 
     async def _buffer_message(self, msg: Any) -> None:
         content = self._select_content_source_message(msg)
-        raw_type = getattr(content, "type", None)
-        text = getattr(content, "text", None) or ""
+        raw_type = self._field(content, "type")
+        text = self._field(content, "text") or ""
         normalized_type = self._normalize_live_message_type(raw_type, text)
         media_type, media_url, file_name = self._extract_media_metadata(content)
         if media_type == "document" and media_url is None:
             media_url = await self._resolve_document_url(
+                content,
+                chat_id=int(msg.chat_id),
+                message_id=msg.id,
+            )
+        if media_type == "video" and media_url is None:
+            media_url = await self._resolve_video_url(
                 content,
                 chat_id=int(msg.chat_id),
                 message_id=msg.id,
@@ -697,7 +750,7 @@ class PymaxAdapter(MaxClientPort):
                     sender=getattr(msg, "sender", None) or "",
                     time=getattr(msg, "time", None) or 0,
                     type=media_type or normalized_type,
-                    description=str(getattr(content, "description", None) or ""),
+                    description=str(self._field(content, "description") or ""),
                     media_url=media_url,
                     file_name=file_name,
                 )

@@ -204,7 +204,9 @@ class TestReconcileService:
             backfill_count=5,
         )
 
-        await service.reconcile(telegram_user_id=123, force_recreate=True, target_max_chat_id="chat1")
+        await service.reconcile(
+            telegram_user_id=123, force_recreate=True, target_max_chat_id="chat1"
+        )
 
         repos.telegram.create_topic.assert_called_once_with(chat_id=123, title="Alice")
         repos.topic_repo.save.assert_called_once()
@@ -266,8 +268,16 @@ class TestReconcileService:
         max_client = MagicMock(start=AsyncMock())
         max_client.list_personal_chats = AsyncMock(
             return_value=[
-                {"max_chat_id": "chat234", "title": "Irina", "participant_ids": ["192875451", "109283159"]},
-                {"max_chat_id": "chat999", "title": "Other", "participant_ids": ["192875451", "222"]},
+                {
+                    "max_chat_id": "chat234",
+                    "title": "Irina",
+                    "participant_ids": ["192875451", "109283159"],
+                },
+                {
+                    "max_chat_id": "chat999",
+                    "title": "Other",
+                    "participant_ids": ["192875451", "222"],
+                },
             ]
         )
         max_client.get_messages = AsyncMock(return_value=[])
@@ -425,7 +435,9 @@ class TestReconcileService:
             text="[Unknown UnknownID ??.??.?? ??:??]\nhello",
         )
 
-    async def test_send_backfill_message_falls_back_to_text_when_audio_url_is_rejected(self) -> None:
+    async def test_send_backfill_message_falls_back_to_text_when_audio_url_is_rejected(
+        self,
+    ) -> None:
         repos = MockRepos()
         repos.telegram.send_audio_to_topic = AsyncMock(
             side_effect=TelegramBadRequest(
@@ -463,6 +475,84 @@ class TestReconcileService:
             chat_id=123,
             topic_id=200,
             text="[Igor 192875451 22.03.26 22:30]\n[audio]: https://example.com/audio.mp3",
+        )
+
+    async def test_send_backfill_message_sends_video_with_caption(self) -> None:
+        repos = MockRepos()
+        repos.telegram.send_video_to_topic = AsyncMock(return_value=500)
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+        )
+
+        await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "0",
+                "type": "video",
+                "media_url": "https://example.com/circle.mp4",
+                "text": "Circle caption",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        repos.telegram.send_video_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=200,
+            video_url="https://example.com/circle.mp4",
+            caption="[Igor 192875451 22.03.26 22:30]\nCircle caption",
+        )
+
+    async def test_send_backfill_message_falls_back_to_video_url_when_upload_is_rejected(
+        self,
+    ) -> None:
+        repos = MockRepos()
+        repos.telegram.send_video_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=MagicMock(),
+                message="failed to get HTTP URL content",
+            )
+        )
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=500)
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+        )
+
+        await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "0",
+                "type": "video",
+                "media_url": "https://example.com/large.mp4",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        repos.telegram.send_text_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=200,
+            text="[Igor 192875451 22.03.26 22:30]\n[video]: https://example.com/large.mp4",
         )
 
     async def test_send_backfill_message_falls_back_to_file_name_when_document_has_no_url(
@@ -534,10 +624,7 @@ class TestReconcileService:
             chat_id=123,
             topic_id=200,
             photo_url="https://example.com/image.jpg",
-            caption=(
-                "[Ирина 109283159 20.03.26 15:50]\n"
-                "Кроме как здесь, не знаю как общаться."
-            ),
+            caption=("[Ирина 109283159 20.03.26 15:50]\nКроме как здесь, не знаю как общаться."),
         )
 
     async def test_backfill_continues_after_single_message_failure(self) -> None:
@@ -634,7 +721,9 @@ class TestReconcileService:
         assert repos.telegram.send_text_to_topic.await_count == 2
         sleep.assert_awaited()
 
-    async def test_create_topic_with_backfill_skips_cursor_update_when_backfill_has_failures(self) -> None:
+    async def test_create_topic_with_backfill_skips_cursor_update_when_backfill_has_failures(
+        self,
+    ) -> None:
         repos = MockRepos()
         sleep = AsyncMock()
         repos.max_chat_repo.get = AsyncMock(

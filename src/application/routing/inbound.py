@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from collections.abc import Callable
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
 
-from src.application.auth.exceptions import AuthError
 from src.application.polling.max_runtime import MaxClientRuntimeRegistry
 from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
@@ -389,6 +387,22 @@ class InboundSyncService:
                         text=f"{prefix}\n[audio]: {media_url}",
                     )
                 raise
+        if msg_type == "video" and media_url:
+            try:
+                return await self._telegram.send_video_to_topic(
+                    chat_id=telegram_user_id,
+                    topic_id=topic_id,
+                    video_url=media_url,
+                    caption=media_caption,
+                )
+            except TelegramBadRequest as exc:
+                if self._should_fallback_from_media_url(exc):
+                    return await self._telegram.send_text_to_topic(
+                        chat_id=telegram_user_id,
+                        topic_id=topic_id,
+                        text=f"{prefix}\n[video]: {media_url}",
+                    )
+                raise
         if msg_type in {"document", "file"} and media_url:
             file_name = str(msg.get("file_name") or "file.bin").strip() or "file.bin"
             try:
@@ -502,7 +516,15 @@ class InboundSyncService:
 
         if normalized_description in {"photo", "image", "picture"}:
             return "image"
-        if normalized_description in {"video", "gif", "sticker", "file", "audio", "voice", "document"}:
+        if normalized_description in {
+            "video",
+            "gif",
+            "sticker",
+            "file",
+            "audio",
+            "voice",
+            "document",
+        }:
             return normalized_description
         return normalized_type
 
