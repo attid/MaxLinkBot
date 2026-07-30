@@ -175,7 +175,9 @@ class TestHealthCheckService:
         )
         repos.audit_repo.has_recent_event = AsyncMock(return_value=False)
 
-        max_client = MagicMock(start=AsyncMock(side_effect=AuthError("Persisted MAX session not found")))
+        max_client = MagicMock(
+            start=AsyncMock(side_effect=AuthError("Persisted MAX session not found"))
+        )
         max_client.close = AsyncMock()
 
         def factory(_uid: int, _phone: str) -> MagicMock:

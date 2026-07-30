@@ -922,5 +922,7 @@ class TestReconcileService:
 
         await service.reconcile(telegram_user_id=123)
 
-        saved_cursor = repos.cursor_repo.upsert.await_args.args[0]
+        cursor_call = repos.cursor_repo.upsert.await_args
+        assert cursor_call is not None
+        saved_cursor = cursor_call.args[0]
         assert saved_cursor.last_max_message_id == "42"

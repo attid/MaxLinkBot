@@ -29,6 +29,9 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
 - The runtime keeps one logical MAX session per Telegram user binding.
 - The project wraps the external client behind its own adapter in `src/infrastructure/max/adapter.py`.
 - `WebClient.fetch_chats()` may return `ChatType.DIALOG` chats with `title=None`; for those chats the usable identity comes from `participants` and `owner`.
+- The MAX adapter validates the chat fields used by the application and exposes them
+  through `PersonalChatData`: string `max_chat_id`, string `title`, and optional
+  `participant_ids: list[str]`. Reconcile does not consume untyped PyMax chat objects.
 - `WebClient.fetch_users()` / `get_cached_user()` return `User` objects whose display names are available via `user.names[]`.
 - `WebClient.fetch_history()` exposes sender identity as an ID and message time as an epoch-milliseconds timestamp.
 - `WebClient.send_message()` accepts outgoing media through `attachments=[Photo(...)]`

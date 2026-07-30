@@ -14,6 +14,8 @@ from src.application.ports.repositories import (
     MessageLinkRepository,
     TelegramTopicRepository,
 )
+from src.domain.bindings.models import Binding
+from src.domain.chats.topic import TelegramTopic
 from src.domain.messages.models import Direction, MessageLink
 from src.domain.sync.models import AuditEventType
 
@@ -41,7 +43,7 @@ class OutboundSyncService:
         self,
         telegram_user_id: int,
         telegram_topic_id: int,
-    ) -> tuple[object, object]:
+    ) -> tuple[Binding, TelegramTopic]:
         binding = await self._binding_repo.get(telegram_user_id)
         if binding is None:
             raise AuthError("No binding for user")
@@ -77,7 +79,9 @@ class OutboundSyncService:
                     binding.max_session_data,
                 )
             else:
-                max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+                max_client = self._max_client_factory(
+                    binding.telegram_user_id, binding.max_session_data
+                )
                 await max_client.start()  # type: ignore[attr-defined]
             max_msg_id = await max_client.send_message(topic.max_chat_id, text)
         except AuthError:
@@ -137,7 +141,9 @@ class OutboundSyncService:
                     binding.max_session_data,
                 )
             else:
-                max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+                max_client = self._max_client_factory(
+                    binding.telegram_user_id, binding.max_session_data
+                )
                 await max_client.start()  # type: ignore[attr-defined]
             max_msg_id = await max_client.send_photo(
                 topic.max_chat_id,
@@ -201,7 +207,9 @@ class OutboundSyncService:
                     binding.max_session_data,
                 )
             else:
-                max_client = self._max_client_factory(binding.telegram_user_id, binding.max_session_data)
+                max_client = self._max_client_factory(
+                    binding.telegram_user_id, binding.max_session_data
+                )
                 await max_client.start()  # type: ignore[attr-defined]
             max_msg_id = await max_client.send_file(
                 topic.max_chat_id,

@@ -59,7 +59,9 @@ def register_handlers(
                     )
                     await auth_service.complete_qr_auth(auth_start.client, telegram_user_id)
                     await reconcile_service.reconcile(telegram_user_id)
-                    await message.answer("Existing MAX session restored. Your chats are up to date.")
+                    await message.answer(
+                        "Existing MAX session restored. Your chats are up to date."
+                    )
                     return
 
                 await message.answer("Open MAX app → Settings → Linked devices → Scan QR")
@@ -87,7 +89,9 @@ def register_handlers(
             await message.answer("MAX session expired. Send /start to re-authorize.")
             await auth_service.mark_reauth_required(telegram_user_id)
         except Exception:
-            logger.exception("/start reconcile unexpected error telegram_user_id=%s", telegram_user_id)
+            logger.exception(
+                "/start reconcile unexpected error telegram_user_id=%s", telegram_user_id
+            )
             await message.answer("Sync failed. Check logs and try /start again.")
 
     @router.message(Command("resync"))
@@ -158,10 +162,14 @@ def register_handlers(
         if message.message_thread_id:
             if message.photo:
                 largest_photo = message.photo[-1]
-                file = await message.bot.get_file(largest_photo.file_id)
+                bot = message.bot
+                assert bot is not None
+                file = await bot.get_file(largest_photo.file_id)
+                file_path = file.file_path
+                assert file_path is not None
                 buffer = io.BytesIO()
-                await message.bot.download_file(file.file_path, destination=buffer)
-                filename = Path(file.file_path or largest_photo.file_id).name or f"{largest_photo.file_id}.jpg"
+                await bot.download_file(file_path, destination=buffer)
+                filename = Path(file_path).name or f"{largest_photo.file_id}.jpg"
                 try:
                     await outbound_service.deliver_photo(
                         telegram_user_id=telegram_user_id,
@@ -176,11 +184,15 @@ def register_handlers(
 
             if message.document:
                 document = message.document
-                file = await message.bot.get_file(document.file_id)
+                bot = message.bot
+                assert bot is not None
+                file = await bot.get_file(document.file_id)
+                file_path = file.file_path
+                assert file_path is not None
                 buffer = io.BytesIO()
-                await message.bot.download_file(file.file_path, destination=buffer)
+                await bot.download_file(file_path, destination=buffer)
                 fallback_name = f"{document.file_id}.bin"
-                filename = document.file_name or Path(file.file_path or fallback_name).name or fallback_name
+                filename = document.file_name or Path(file_path).name or fallback_name
                 try:
                     await outbound_service.deliver_file(
                         telegram_user_id=telegram_user_id,
@@ -210,4 +222,6 @@ def register_handlers(
         text = message.text
         if not text:
             return
-        await message.answer("Send /start to sync chats or /resync [max_chat_id] to rebuild topics.")
+        await message.answer(
+            "Send /start to sync chats or /resync [max_chat_id] to rebuild topics."
+        )

@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, NotRequired, TypedDict
+
+
+class PersonalChatData(TypedDict):
+    """Validated personal-chat payload exposed by the MAX client port."""
+
+    max_chat_id: str
+    title: str
+    participant_ids: NotRequired[list[str]]
 
 
 class MaxClient(ABC):
@@ -38,7 +46,7 @@ class MaxClient(ABC):
         ...
 
     @abstractmethod
-    async def list_personal_chats(self) -> list[dict[str, Any]]:
+    async def list_personal_chats(self) -> list[PersonalChatData]:
         """Return list of personal chats for the current session.
 
         Returns:

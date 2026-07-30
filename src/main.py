@@ -185,7 +185,9 @@ async def main() -> None:
 
     # Register Telegram handlers
     dp = Dispatcher(bot=bot)
-    register_handlers(dp, allowlist_gate, auth_service, reconcile_service, outbound_service, tg_client)
+    register_handlers(
+        dp, allowlist_gate, auth_service, reconcile_service, outbound_service, tg_client
+    )
 
     # Start background poller
     asyncio.create_task(poller.start())

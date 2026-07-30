@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from src.application.auth.exceptions import AuthError
-from src.application.routing.inbound import MaxRuntimeDegradedError
 from src.application.ports.clients import MaxClient
 from src.application.ports.repositories import (
     AuditRepository,
     BindingRepository,
 )
 from src.application.ports.telegram_client import TelegramClient
+from src.application.routing.inbound import MaxRuntimeDegradedError
 from src.domain.bindings.models import BindingStatus
 from src.domain.sync.models import AuditEventType
 
@@ -126,7 +126,7 @@ class BackgroundPoller:
         self,
         binding_repo: BindingRepository,
         health_service: HealthCheckService,
-        inbound_factory: Any,  # (telegram_user_id) -> InboundSyncService per-user
+        inbound_factory: Callable[[int], Any],
         poll_interval: float = 60.0,
         health_check_interval: float = 300.0,
         runtime_health_tracker: RuntimeHealthTracker | None = None,

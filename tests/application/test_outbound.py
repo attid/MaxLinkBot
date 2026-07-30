@@ -197,7 +197,9 @@ class TestOutboundSyncService:
         )
 
         assert result == "max_msg_xyz"
-        shared_runtime.get_client.assert_awaited_once_with(mock_binding.telegram_user_id, mock_binding.max_session_data)
+        shared_runtime.get_client.assert_awaited_once_with(
+            mock_binding.telegram_user_id, mock_binding.max_session_data
+        )
         shared_runtime.mark_chat_dirty.assert_awaited_once_with(
             mock_binding.telegram_user_id,
             "max_chat_abc",

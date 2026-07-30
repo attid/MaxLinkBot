@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from aiogram.exceptions import TelegramBadRequest
 
 from src.application.auth.exceptions import AuthError
-from src.application.ports.clients import MaxClient
+from src.application.ports.clients import MaxClient, PersonalChatData
 from src.application.ports.repositories import (
     AuditRepository,
     BindingRepository,
@@ -39,7 +39,7 @@ class RefreshReconcileService:
         telegram_client: TelegramClient,
         max_client_factory: Callable[[int, str], MaxClient],
         backfill_count: int = 5,
-        sleep_func: Callable[[float], object] | None = None,
+        sleep_func: Callable[[float], Awaitable[object]] | None = None,
     ) -> None:
         self._binding_repo = binding_repo
         self._max_chat_repo = max_chat_repo
@@ -49,7 +49,7 @@ class RefreshReconcileService:
         self._telegram = telegram_client
         self._max_client_factory = max_client_factory
         self._backfill_count = backfill_count
-        self._sleep = sleep_func or asyncio.sleep
+        self._sleep: Callable[[float], Awaitable[object]] = sleep_func or asyncio.sleep
         self._topic_ready_retry_delays = (0.3, 1.0, 2.0)
 
     async def reconcile(
@@ -246,8 +246,8 @@ class RefreshReconcileService:
             )
 
     def _resolve_target_chats(
-        self, max_chats_raw: list[dict[str, object]], target_max_chat_id: str
-    ) -> list[dict[str, object]]:
+        self, max_chats_raw: list[PersonalChatData], target_max_chat_id: str
+    ) -> list[PersonalChatData]:
         exact_matches = [
             chat
             for chat in max_chats_raw
@@ -471,7 +471,7 @@ class RefreshReconcileService:
 
     async def _retry_topic_send(
         self,
-        send_call: Callable[[], object],
+        send_call: Callable[[], Awaitable[int]],
         telegram_user_id: int,
         topic_id: int,
     ) -> int:
@@ -480,10 +480,7 @@ class RefreshReconcileService:
             if delay > 0:
                 await self._sleep(delay)
             try:
-                result = send_call()
-                if hasattr(result, "__await__"):
-                    return await result  # type: ignore[misc]
-                return result  # type: ignore[return-value]
+                return await send_call()
             except TelegramBadRequest as exc:
                 if not self._is_message_thread_not_found(exc):
                     raise
@@ -524,7 +521,7 @@ class RefreshReconcileService:
         sender_id = str(msg.get("sender_id") or "UnknownID").strip()
         raw_time = msg.get("time")
         if raw_time:
-            timestamp = datetime.fromtimestamp(int(raw_time) / 1000, tz=UTC)
+            timestamp = datetime.fromtimestamp(int(str(raw_time)) / 1000, tz=UTC)
             formatted_time = timestamp.strftime("%d.%m.%y %H:%M")
         else:
             formatted_time = "??.??.?? ??:??"

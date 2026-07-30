@@ -26,6 +26,7 @@ from pymax.protocol.enums import Opcode
 
 from src.application.auth.exceptions import AuthError
 from src.application.ports.clients import MaxClient as MaxClientPort
+from src.application.ports.clients import PersonalChatData
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +147,9 @@ class PymaxAdapter(MaxClientPort):
     async def restore_session(self, session_data: str) -> None:
         pass
 
-    async def list_personal_chats(self) -> list[dict[str, Any]]:
+    async def list_personal_chats(self) -> list[PersonalChatData]:
         raw = await self._client.fetch_chats()  # type: ignore[reportUnknownMemberType]
-        chats: list[dict[str, Any]] = []
+        chats: list[PersonalChatData] = []
         for chat in raw:
             title = await self._resolve_chat_title(chat)
             participants = getattr(chat, "participants", {}) or {}
