@@ -56,6 +56,36 @@ def make_auth_service(binding_repo: MagicMock, audit_repo: MagicMock) -> Authori
 
 
 class TestAuthorizationFlowService:
+    async def test_complete_qr_auth_waits_for_authorization_before_saving(self) -> None:
+        binding_repo = MagicMock()
+        binding_repo.save = AsyncMock()
+        audit_repo = MagicMock()
+        audit_repo.log = AsyncMock()
+        client = MagicMock()
+        client.wait_until_authorized = AsyncMock()
+        service = make_auth_service(binding_repo, audit_repo)
+
+        await service.complete_qr_auth(client, telegram_user_id=123)
+
+        client.wait_until_authorized.assert_awaited_once()
+        binding_repo.save.assert_awaited_once()
+
+    async def test_complete_qr_auth_does_not_save_when_authorization_fails(self) -> None:
+        binding_repo = MagicMock()
+        binding_repo.save = AsyncMock()
+        audit_repo = MagicMock()
+        audit_repo.log = AsyncMock()
+        client = MagicMock()
+        client.wait_until_authorized = AsyncMock(side_effect=AuthError("QR expired"))
+        client.close = AsyncMock()
+        service = make_auth_service(binding_repo, audit_repo)
+
+        with pytest.raises(AuthError, match="QR expired"):
+            await service.complete_qr_auth(client, telegram_user_id=123)
+
+        binding_repo.save.assert_not_awaited()
+        client.close.assert_awaited_once()
+
     async def test_begin_qr_auth_uses_existing_session_without_qr(self) -> None:
         binding_repo = MagicMock()
         binding_repo.save = AsyncMock()

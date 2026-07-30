@@ -40,9 +40,18 @@
 
 4. Check whether the persisted session is actually authorized:
    ```bash
-   sqlite3 /data/max_sessions/<telegram_user_id>/session.db "SELECT token, device_id FROM auth;"
+   sqlite3 /data/max_sessions/<telegram_user_id>/session.db \
+     "SELECT length(token), device_id, chats_sync FROM sessions;"
    ```
-   A row with empty `token` means the QR/login flow was started but not completed; background runtime should still force `reauth_required`.
+   No row (or an empty token) means QR/login did not produce a reusable PyMax 2.3
+   session; background runtime should force `reauth_required`.
+
+5. After upgrading from PyMax 1.2.5, both `auth` and `sessions` may exist:
+   ```bash
+   sqlite3 /data/max_sessions/<telegram_user_id>/session.db ".tables"
+   ```
+   This is expected. MaxLinkBot copies the legacy token into `sessions` and preserves
+   `auth` for rollback. Do not delete either table during diagnosis.
 
 ## Resolution
 

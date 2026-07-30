@@ -62,11 +62,11 @@ class AuthorizationFlowService:
         """
         client = self._max_client_factory(telegram_user_id, None)
         try:
-            qr_result = await client.start_for_qr()  # type: ignore[attr-defined]
+            qr_result = await client.start_for_qr()
         except Exception:
             await client.close()
             raise
-        qr_payload = qr_result if isinstance(qr_result, bytes) and qr_result else None
+        qr_payload = qr_result or None
         if qr_payload is None:
             if await client.is_session_valid():
                 return AuthStartResult(
@@ -88,6 +88,11 @@ class AuthorizationFlowService:
         The QR scan completed and the token is saved in the client's session DB.
         Client stays connected for inbound polling (do NOT close it here).
         """
+        try:
+            await client.wait_until_authorized()
+        except Exception:
+            await client.close()
+            raise
 
         now = int(time.time())
         binding = Binding(

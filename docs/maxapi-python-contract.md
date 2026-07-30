@@ -6,30 +6,49 @@
 
 `maxapi-python` — Python package for MAX WebSocket client integration.
 
-Installation: `pip install maxapi-python`
+Pinned version: `2.3.1`
 
-Python import path: `from pymax import MaxClient`
+Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
 
 ## Verified In Repository
 
 - Authentication is WebSocket-based.
-- The current integration uses QR/session-based auth with `device_type="WEB"`.
+- The current integration uses `WebClient` and QR/session-based auth.
+- QR URLs are captured through a public `QrHandler` implementation and rendered to PNG
+  for Telegram; private PyMax methods are not patched.
+- An active binding is saved only after PyMax emits `on_start()`, which means QR
+  confirmation completed and the token was persisted. QR expiry/startup errors are
+  translated to `AuthError` and the client is closed.
 - Session data is persisted on disk in per-user directories under `MAX_WORK_DIR/{telegram_user_id}/`.
 - The persisted restore artifact currently expected by the repository is `MAX_WORK_DIR/{telegram_user_id}/session.db`.
-- A merely existing `session.db` is not enough for restore: the repository currently treats the session as reusable only when table `auth` contains at least one non-empty `token`.
+- PyMax 2.3 stores token, device ID and sync markers in table `sessions`.
+- On first use, a PyMax 1.2.5 row from legacy table `auth` is copied into `sessions`.
+  The `auth` table is preserved for rollback.
+- A merely existing `session.db` is not enough for restore: background runtime requires
+  a non-empty token in `sessions`.
 - The runtime keeps one logical MAX session per Telegram user binding.
 - The project wraps the external client behind its own adapter in `src/infrastructure/max/adapter.py`.
-- `MaxClient.fetch_chats()` may return `ChatType.DIALOG` chats with `title=None`; for those chats the usable identity comes from `participants` and `owner`.
-- `MaxClient.fetch_users()` / `get_cached_user()` return `User` objects whose display names are available via `user.names[]`.
-- `MaxClient.fetch_history()` exposes sender identity as an ID (`sender` / `sender_id`) and message time as an epoch-milliseconds timestamp.
-- `MaxClient.send_message()` supports generic attachments via `attachment=pymax.files.File(...)` in addition to `Photo` and `Video`.
-- For inbound polling, adapter code must not assume that `MaxClient.fetch_history()` is ordered `newest -> oldest`; filtering by cursor has to scan the whole returned batch instead of stopping at the first old message.
-- `MaxClient` supports live inbound handling through message handlers; in this repository the adapter buffers handler events and the application drains them as the primary `MAX -> Telegram` transport.
+- `WebClient.fetch_chats()` may return `ChatType.DIALOG` chats with `title=None`; for those chats the usable identity comes from `participants` and `owner`.
+- `WebClient.fetch_users()` / `get_cached_user()` return `User` objects whose display names are available via `user.names[]`.
+- `WebClient.fetch_history()` exposes sender identity as an ID and message time as an epoch-milliseconds timestamp.
+- `WebClient.send_message()` accepts outgoing media through `attachments=[Photo(...)]`
+  and `attachments=[File(...)]`.
+- For inbound polling, adapter code must not assume that `WebClient.fetch_history()` is ordered `newest -> oldest`; filtering by cursor has to scan the whole returned batch instead of stopping at the first old message.
+- `WebClient` supports live inbound handling through `on_message()`; the adapter buffers
+  handler events and the application drains them as the primary `MAX -> Telegram` transport.
+- `on_start()` runs again after a successful reconnect and is used as the adapter's
+  reconnect signal.
 - `fetch_history()` remains a fallback catch-up path and should not be used as a high-frequency steady-state polling mechanism for every chat.
 - Human-readable titles for MAX dialogs can be resolved as "the participant whose ID differs from chat.owner".
-- Background/runtime `start()` paths in this repository are restore-only: if `session.db` is missing or `auth.token` is empty, the adapter raises `AuthError` instead of starting a fresh QR login flow in the background.
-- Generic MAX file/document attaches are currently treated in-repo as `type=document` when `attach.type` is `FILE` or `DOCUMENT`, with `attach.url` used as the download source and `attach.file_name`/`filename`/`name`/`title` as filename candidates.
-- Self-chat (`chat_id=0`) file messages may arrive as `FileAttach(file_id, name, size, token, type=FILE)` without any direct `url`; in that shape the repository can preserve file semantics and filename, but cannot fetch the binary without additional token-to-download resolution.
+- Background/runtime `start()` paths are restore-only: if `session.db` is missing or
+  `sessions.token` is empty, the adapter raises `AuthError` instead of starting QR auth.
+- A PyMax `ApiError` from the LOGIN opcode is translated to application `AuthError`, so
+  the existing reauth flow handles a rejected migrated token instead of hanging startup.
+- Incoming `FileAttachment` contains `file_id`, name, size and token but no direct URL.
+  The adapter resolves a temporary download URL through `WebClient.get_file_by_id()`.
+- Unknown attachment types are represented by PyMax `UnknownAttachment` instead of
+  failing the complete message parse.
+- PyMax 2.3.1 decodes LZ4 payload coefficients and Zstandard payloads.
 - Forwarded / linked MAX messages may expose the actual supported payload under `message.link.message` while the top-level message stays effectively empty (`type=USER`, no text/attaches usable for rendering). Adapter code should preserve top-level sender/time/id metadata, but read content/media metadata from `link.message` when the top level has no renderable content.
 
 ## Known Unknowns
@@ -38,7 +57,7 @@ The following still need explicit confirmation or stronger documentation:
 
 1. **Session lifecycle details:**
    - What exact events or exceptions indicate expired auth versus transient disconnect?
-   - Which parts of the on-disk session are safe to treat as reusable across restarts?
+   - Will every production token created by 1.2.5 remain accepted after schema migration?
 
 2. **Chat and message model details:**
    - Which fields on chats/messages are stable enough to rely on as long-term identifiers?
@@ -47,9 +66,9 @@ The following still need explicit confirmation or stronger documentation:
 3. **Polling and reconnect behavior:**
    - What reconnect/backoff behavior should be considered acceptable for background delivery?
    - Which adapter states should be treated as recoverable versus `reauth_required`?
+   - Does the production WebSocket remain stable through a multi-hour soak test?
 
 4. **Operational contract:**
-   - Which files inside `MAX_WORK_DIR` are mandatory for restore?
    - What diagnostics should be documented for broken or partial session directories?
 
 ## Action Items

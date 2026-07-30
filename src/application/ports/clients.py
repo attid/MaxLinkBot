@@ -28,6 +28,16 @@ class MaxClient(ABC):
         ...
 
     @abstractmethod
+    async def start_for_qr(self) -> bytes:
+        """Start QR authorization and return the QR image bytes."""
+        ...
+
+    @abstractmethod
+    async def wait_until_authorized(self) -> None:
+        """Wait until QR/session authorization has completed successfully."""
+        ...
+
+    @abstractmethod
     async def list_personal_chats(self) -> list[dict[str, Any]]:
         """Return list of personal chats for the current session.
 

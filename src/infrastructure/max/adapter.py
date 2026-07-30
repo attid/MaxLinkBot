@@ -12,23 +12,92 @@ import io
 import logging
 import os
 import sqlite3
-import tempfile
 import time
-from pathlib import Path
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import qrcode
-from pymax import MaxClient
-from pymax.files import File, Photo
-from pymax.payloads import UserAgentPayload
+from pymax import ExtraConfig, File, Photo, WebClient
+from pymax.exceptions import ApiError
+from pymax.protocol.enums import Opcode
 
 from src.application.auth.exceptions import AuthError
 from src.application.ports.clients import MaxClient as MaxClientPort
 
 logger = logging.getLogger(__name__)
+
+
+class TelegramQrProvider:
+    """Captures a PyMax QR URL as PNG bytes for delivery through Telegram."""
+
+    def __init__(self) -> None:
+        self._qr_bytes: bytes | None = None
+        self._ready = asyncio.Event()
+
+    async def show_qr(self, qr_url: str) -> None:
+        image = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,  # type: ignore[attr-defined]
+            box_size=10,
+            border=4,
+        )
+        image.add_data(qr_url)
+        image.make(fit=True)
+        buffer = io.BytesIO()
+        image.make_image(fill_color="black", back_color="white").save(buffer)  # type: ignore[call-arg]
+        self._qr_bytes = buffer.getvalue()
+        self._ready.set()
+
+    async def wait_for_qr(self, timeout: float = 5.0) -> bytes:
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+        except TimeoutError:
+            return b""
+        return self._qr_bytes or b""
+
+
+def migrate_legacy_session_db(session_db_path: Path) -> None:
+    """Copy a PyMax 1.2.5 auth row into the 2.3 session table.
+
+    The legacy table is intentionally preserved so a rollback can still use it.
+    Existing 2.3 sessions always win and are never overwritten.
+    """
+    with sqlite3.connect(session_db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT NOT NULL PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                mt_instance_id TEXT NOT NULL DEFAULT '',
+                chats_sync INTEGER NOT NULL DEFAULT -1,
+                contacts_sync INTEGER NOT NULL DEFAULT -1,
+                drafts_sync INTEGER NOT NULL DEFAULT -1,
+                presence_sync INTEGER NOT NULL DEFAULT -1,
+                config_hash TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        session_exists = conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
+        legacy_table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth'"
+        ).fetchone()
+        if session_exists is None and legacy_table_exists is not None:
+            legacy_row = conn.execute(
+                "SELECT token, device_id FROM auth WHERE COALESCE(token, '') != '' LIMIT 1"
+            ).fetchone()
+            if legacy_row is not None:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO sessions(token, device_id, phone)
+                    VALUES (?, ?, '')
+                    """,
+                    legacy_row,
+                )
+        conn.commit()
 
 
 @dataclass
@@ -52,14 +121,19 @@ class PymaxAdapter(MaxClientPort):
 
     USER_CACHE_TTL_SECONDS = 60 * 60 * 24
 
-    def __init__(self, client: MaxClient, session_db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        client: WebClient,
+        session_db_path: Path | None = None,
+        qr_provider: TelegramQrProvider | None = None,
+    ) -> None:
         self._client = client
         self._session_db_path = session_db_path
+        self._qr_provider = qr_provider or TelegramQrProvider()
         self._buffer: list[PymaxMessage] = []
         self._lock = asyncio.Lock()
         self._started = False
         self._registered = False
-        self._qr_bytes: bytes | None = None
         self._client_task: asyncio.Task[None] | None = None
         self._ready_event = asyncio.Event()
         self._user_cache: dict[int, tuple[float, str]] = {}
@@ -74,11 +148,11 @@ class PymaxAdapter(MaxClientPort):
 
     async def list_personal_chats(self) -> list[dict[str, Any]]:
         raw = await self._client.fetch_chats()  # type: ignore[reportUnknownMemberType]
-        chats = []
+        chats: list[dict[str, Any]] = []
         for chat in raw:
             title = await self._resolve_chat_title(chat)
             participants = getattr(chat, "participants", {}) or {}
-            participant_ids = [str(uid) for uid in participants.keys()]
+            participant_ids = [str(uid) for uid in participants]
             logger.info(
                 "max resolved chat title chat_id=%s chat_type=%r raw_title=%r owner=%r participants=%r resolved_title=%r",
                 getattr(chat, "id", None),
@@ -126,6 +200,12 @@ class PymaxAdapter(MaxClientPort):
             content = self._select_content_source_message(m)
             sender_id = self._extract_sender_id(m)
             media_type, media_url, file_name = self._extract_media_metadata(content)
+            if media_type == "document" and media_url is None:
+                media_url = await self._resolve_document_url(
+                    content,
+                    chat_id=chat_id,
+                    message_id=m.id,
+                )
             raw_description = getattr(content, "description", None)
             description = raw_description.strip() if isinstance(raw_description, str) else ""
             text = getattr(content, "text", None) or ""
@@ -172,7 +252,7 @@ class PymaxAdapter(MaxClientPort):
 
         owner = getattr(chat, "owner", None)
         participants = getattr(chat, "participants", {}) or {}
-        participant_ids = [int(uid) for uid in participants.keys()]
+        participant_ids = [int(uid) for uid in participants]
         other_participant_id = next((uid for uid in participant_ids if uid != owner), None)
         if other_participant_id is None:
             logger.info(
@@ -198,9 +278,6 @@ class PymaxAdapter(MaxClientPort):
             return sender
 
         sender_id = self._extract_sender_id(message)
-        if sender_id is None:
-            return ""
-
         display_name = await self._resolve_user_display_name(int(sender_id))
         if display_name:
             return display_name
@@ -239,12 +316,17 @@ class PymaxAdapter(MaxClientPort):
         if isinstance(description, str) and description.strip():
             return True
 
-        attaches = getattr(message, "attaches", None)
-        return isinstance(attaches, (list, tuple)) and len(attaches) > 0
+        raw_attaches = getattr(message, "attaches", None)
+        if not isinstance(raw_attaches, (list, tuple)):
+            return False
+        attaches = cast(list[Any] | tuple[Any, ...], raw_attaches)
+        return bool(attaches)
 
     def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None, str | None]:
-        attaches = getattr(message, "attaches", None)
-        if not isinstance(attaches, (list, tuple)):
+        raw_attaches = getattr(message, "attaches", None)
+        if isinstance(raw_attaches, (list, tuple)):
+            attaches = list(cast(list[Any] | tuple[Any, ...], raw_attaches))
+        else:
             attaches = []
         for attach in attaches:
             attach_type = getattr(attach, "type", None)
@@ -287,6 +369,39 @@ class PymaxAdapter(MaxClientPort):
                 return value.strip()
         return None
 
+    async def _resolve_document_url(
+        self,
+        message: Any,
+        chat_id: int,
+        message_id: int | str,
+    ) -> str | None:
+        raw_attaches = getattr(message, "attaches", None)
+        if not isinstance(raw_attaches, (list, tuple)):
+            return None
+
+        for attach in cast(list[Any] | tuple[Any, ...], raw_attaches):
+            attach_type = getattr(attach, "type", None)
+            type_name = getattr(attach_type, "value", attach_type)
+            if not isinstance(type_name, str) or type_name.strip().lower() not in {
+                "file",
+                "document",
+            }:
+                continue
+            file_id = getattr(attach, "file_id", None)
+            if not isinstance(file_id, int):
+                return None
+            with suppress(Exception):
+                file_request = await self._client.get_file_by_id(
+                    chat_id,
+                    message_id,
+                    file_id,
+                )
+                url = getattr(file_request, "url", None)
+                if isinstance(url, str) and url.strip():
+                    return url.strip()
+            return None
+        return None
+
     async def _resolve_user_display_name(self, user_id: int) -> str | None:
         cached = self._user_cache.get(user_id)
         now = time.time()
@@ -305,7 +420,9 @@ class PymaxAdapter(MaxClientPort):
         display_name = self._extract_user_display_name(user)
         if display_name:
             self._user_cache[user_id] = (now + self.USER_CACHE_TTL_SECONDS, display_name)
-            logger.info("max user display name resolved user_id=%s display_name=%r", user_id, display_name)
+            logger.info(
+                "max user display name resolved user_id=%s display_name=%r", user_id, display_name
+            )
         else:
             logger.info("max user display name missing user_id=%s", user_id)
         return display_name
@@ -355,22 +472,13 @@ class PymaxAdapter(MaxClientPort):
         filename: str,
         caption: str,
     ) -> str:
-        suffix = self._normalize_photo_suffix(filename)
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                temp_file.write(image_bytes)
-                temp_path = Path(temp_file.name)
-
-            msg = await self._client.send_message(
-                text=caption,
-                chat_id=int(max_chat_id),
-                attachment=Photo(path=str(temp_path)),
-            )
-            return str(msg.id) if msg else ""
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
+        normalized_name = f"{Path(filename).stem}{self._normalize_photo_suffix(filename)}"
+        msg = await self._client.send_message(
+            text=caption,
+            chat_id=int(max_chat_id),
+            attachments=[Photo(raw=image_bytes, name=normalized_name)],
+        )
+        return str(msg.id) if msg else ""
 
     async def send_file(
         self,
@@ -379,26 +487,16 @@ class PymaxAdapter(MaxClientPort):
         filename: str,
         caption: str,
     ) -> str:
-        suffix = Path(filename).suffix or ".bin"
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                temp_file.write(file_bytes)
-                temp_path = Path(temp_file.name)
-
-            msg = await self._client.send_message(
-                text=caption,
-                chat_id=int(max_chat_id),
-                attachment=File(path=str(temp_path)),
-            )
-            return str(msg.id) if msg else ""
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
+        msg = await self._client.send_message(
+            text=caption,
+            chat_id=int(max_chat_id),
+            attachments=[File(raw=file_bytes, name=filename)],
+        )
+        return str(msg.id) if msg else ""
 
     def _normalize_photo_suffix(self, filename: str) -> str:
         suffix = Path(filename).suffix.lower()
-        if suffix in Photo.ALLOWED_EXTENSIONS:
+        if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
             return suffix
         return ".jpg"
 
@@ -449,19 +547,19 @@ class PymaxAdapter(MaxClientPort):
         return self._started
 
     async def close(self) -> None:
-        if self._client_task is not None and not self._client_task.done():
-            self._client._stop_event.set()  # type: ignore[reportPrivateUsage]  # sync: signals start() to exit
+        with suppress(Exception):
+            await self._client.close()
+        if self._client_task is not None:
             try:
                 await asyncio.wait_for(self._client_task, timeout=5.0)
             except TimeoutError:
                 self._client_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._client_task
             except asyncio.CancelledError:
                 pass
             self._client_task = None
-        if self._started:
-            with suppress(Exception):
-                await self._client.close()
-            self._started = False
+        self._started = False
         self._ready_event = asyncio.Event()
 
     async def start_for_qr(self) -> bytes:
@@ -471,76 +569,111 @@ class PymaxAdapter(MaxClientPort):
         Caller sends the QR photo to Telegram and then calls close().
         """
         if self._started:
-            return self._qr_bytes or b""
-
-        qr_event = asyncio.Event()
-
-        def capture_qr(qr_link: str) -> None:
-            """Generate QR image from link and signal readiness."""
-            img = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,  # type: ignore[attr-defined]
-                box_size=10,
-                border=4,
-            )
-            img.add_data(qr_link)
-            img.make(fit=True)
-            buf = io.BytesIO()
-            img.make_image(fill_color="black", back_color="white").save(buf)  # type: ignore[call-arg]
-            self._qr_bytes = buf.getvalue()
-            qr_event.set()
-
-        # Patch _print_qr to capture QR image
-        original_print_qr = self._client._print_qr  # type: ignore[reportPrivateUsage]
-        self._client._print_qr = capture_qr  # type: ignore[method-assign]
-
-        # Run client in a background task so we can return QR bytes immediately
-        async def run_client() -> None:
-            await self._client.start()
-
-        self._client_task = asyncio.create_task(run_client())
-
-        # Wait up to 5s for QR bytes to be generated
+            return b""
+        self._register_handlers()
+        self._launch_client()
         try:
-            await asyncio.wait_for(qr_event.wait(), timeout=5.0)
-        except TimeoutError:
-            pass
-        finally:
-            # Restore original _print_qr — client is running in background now
-            self._client._print_qr = original_print_qr  # type: ignore[method-assign,assignment]
+            return await self._wait_for_qr_or_failure()
+        except AuthError:
+            raise
+        except Exception as exc:
+            raise AuthError(f"MAX QR startup failed: {exc}") from exc
 
+    async def wait_until_authorized(self) -> None:
+        """Wait for QR confirmation or restored-session readiness."""
+        try:
+            await self._wait_until_ready()
+        except AuthError:
+            raise
+        except Exception as exc:
+            raise AuthError(f"MAX QR authorization failed: {exc}") from exc
         self._started = True
-        return self._qr_bytes or b""
 
     async def start(self) -> None:
         """Start the client in background and wait until pymax signals readiness."""
         if self._started:
             return
         self._assert_persisted_session_ready()
-        if not self._registered:
-            self._client.add_message_handler(self._on_message)
-            self._registered = True
+        self._register_handlers()
+        self._launch_client()
 
-        async def mark_ready() -> None:
+        logger.info("max start waiting for on_start readiness")
+        await self._wait_until_ready()
+        logger.info("max start ready")
+        self._started = True
+
+    def _register_handlers(self) -> None:
+        if self._registered:
+            return
+
+        @self._client.on_message()
+        async def on_message(  # type: ignore[reportUnusedFunction]
+            msg: Any, _client: WebClient
+        ) -> None:
+            await self._buffer_message(msg)
+
+        @self._client.on_start()
+        async def on_start(  # type: ignore[reportUnusedFunction]
+            _client: WebClient,
+        ) -> None:
             logger.info("max start on_start fired")
             if self._started:
                 self._reconnect_detected = True
                 logger.info("max reconnect detected")
+            self._started = True
             self._ready_event.set()
 
-        self._client.add_on_start_handler(mark_ready)
+        self._registered = True
 
+    def _launch_client(self) -> None:
         if self._client_task is None or self._client_task.done():
             logger.info("max start launching background client task")
             self._client_task = asyncio.create_task(self._client.start())
 
-        logger.info("max start waiting for on_start readiness")
-        await self._ready_event.wait()
-        logger.info("max start ready")
-        self._started = True
+    async def _wait_until_ready(self) -> None:
+        if self._client_task is None:
+            raise RuntimeError("MAX client task was not started")
 
-    def _on_message(self, msg: Any) -> None:
-        asyncio.create_task(self._buffer_message(msg))
+        ready_task = asyncio.create_task(self._ready_event.wait())
+        try:
+            await asyncio.wait(
+                {ready_task, self._client_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if self._ready_event.is_set():
+                return
+            try:
+                await self._client_task
+            except ApiError as exc:
+                if exc.opcode == Opcode.LOGIN:
+                    raise AuthError(f"MAX session login failed: {exc}") from exc
+                raise
+            raise RuntimeError("MAX client stopped before startup completed")
+        finally:
+            if not ready_task.done():
+                ready_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await ready_task
+
+    async def _wait_for_qr_or_failure(self) -> bytes:
+        if self._client_task is None:
+            raise RuntimeError("MAX client task was not started")
+
+        qr_task = asyncio.create_task(self._qr_provider.wait_for_qr(timeout=5.0))
+        try:
+            done, _ = await asyncio.wait(
+                {qr_task, self._client_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if qr_task in done:
+                return await qr_task
+            await self._client_task
+            return b""
+        finally:
+            if not qr_task.done():
+                qr_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await qr_task
 
     async def _buffer_message(self, msg: Any) -> None:
         content = self._select_content_source_message(msg)
@@ -548,6 +681,12 @@ class PymaxAdapter(MaxClientPort):
         text = getattr(content, "text", None) or ""
         normalized_type = self._normalize_live_message_type(raw_type, text)
         media_type, media_url, file_name = self._extract_media_metadata(content)
+        if media_type == "document" and media_url is None:
+            media_url = await self._resolve_document_url(
+                content,
+                chat_id=int(msg.chat_id),
+                message_id=msg.id,
+            )
         async with self._lock:
             self._buffer.append(
                 PymaxMessage(
@@ -596,14 +735,13 @@ class PymaxAdapter(MaxClientPort):
         if self._session_db_path is None:
             return
         if not self._session_db_path.exists():
-            raise AuthError(
-                f"Persisted MAX session not found at {self._session_db_path}"
-            )
+            raise AuthError(f"Persisted MAX session not found at {self._session_db_path}")
 
         try:
+            migrate_legacy_session_db(self._session_db_path)
             with sqlite3.connect(self._session_db_path) as conn:
                 row = conn.execute(
-                    "SELECT token FROM auth WHERE COALESCE(token, '') != '' LIMIT 1"
+                    "SELECT token FROM sessions WHERE COALESCE(token, '') != '' LIMIT 1"
                 ).fetchone()
         except sqlite3.Error as exc:
             raise AuthError(
@@ -611,9 +749,7 @@ class PymaxAdapter(MaxClientPort):
             ) from exc
 
         if row is None:
-            raise AuthError(
-                f"Persisted MAX session is not authorized at {self._session_db_path}"
-            )
+            raise AuthError(f"Persisted MAX session is not authorized at {self._session_db_path}")
 
 
 def max_client_factory(
@@ -629,16 +765,17 @@ def max_client_factory(
     def create(telegram_user_id: int, phone: str | None = None) -> MaxClientPort:
         user_dir = os.path.join(work_dir, str(telegram_user_id))
         session_db_path = Path(user_dir) / "session.db"
-        headers = UserAgentPayload(device_type="WEB", app_version="25.12.13")
-        # For QR auth, the client requires a valid-format phone (regex: ^\+?\d{10,15}$).
-        # Use a placeholder — the phone is not used during QR login.
-        client_phone = phone if phone and phone != "qr_auth" else "+000000000000"
-        client = MaxClient(
-            phone=client_phone,
+        qr_provider = TelegramQrProvider()
+        client = WebClient(
+            session_name="session.db",
             work_dir=user_dir,
-            headers=headers,
-            reconnect=reconnect,
+            extra_config=ExtraConfig(reconnect=reconnect),
+            qr_provider=qr_provider,
         )
-        return PymaxAdapter(client, session_db_path=session_db_path)
+        return PymaxAdapter(
+            client,
+            session_db_path=session_db_path,
+            qr_provider=qr_provider,
+        )
 
     return create

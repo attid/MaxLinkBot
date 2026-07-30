@@ -26,4 +26,4 @@
 
 ## Статус
 
-Accepted
+Superseded by 0004
