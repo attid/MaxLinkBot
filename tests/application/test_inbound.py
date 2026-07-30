@@ -122,6 +122,49 @@ class TestInboundSyncService:
         factory.assert_called_once_with(123, "token")
         repos.telegram.send_text_to_topic.assert_awaited_once()
 
+    async def test_deliver_channel_message_uses_chat_title_without_sender_id(self) -> None:
+        repos = MockRepos()
+        repos.max_chat_repo.get = AsyncMock(
+            return_value=MagicMock(title="Аттракционы Ривьера Сочи")
+        )
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=100)
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="777",
+            topic_id=50,
+            msg={
+                "max_message_id": "1",
+                "chat_id": "777",
+                "type": "text",
+                "text": "2 ДНЯ БЕСПЛАТНЫХ катаний",
+                "sender_name": "0",
+                "sender_id": 0,
+                "time": int(datetime(2026, 7, 25, 7, 0, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        assert delivered is True
+        repos.max_chat_repo.get.assert_awaited_once_with("777")
+        repos.telegram.send_text_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            text=("[Аттракционы Ривьера Сочи 25.07.26 07:00]\n2 ДНЯ БЕСПЛАТНЫХ катаний"),
+        )
+
     async def test_poll_user_ignores_service_live_event_for_regular_chat(self) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(

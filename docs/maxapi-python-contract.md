@@ -43,6 +43,9 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   without a separate `sender_id` field. History and live paths both normalize
   this field into the adapter's `sender_id` and resolve `sender_name` through the
   MAX user cache/API.
+- Channel publications may expose `sender=0` because they have no separate user
+  sender. Inbound delivery uses the persisted MAX chat title as the source label
+  and omits the meaningless sender ID from the Telegram prefix.
 - `on_start()` runs again after a successful reconnect and is used as the adapter's
   reconnect signal.
 - While `WebClient.start()` is running, shutdown has a single owner: the adapter

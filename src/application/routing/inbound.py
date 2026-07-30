@@ -313,10 +313,11 @@ class InboundSyncService:
             return True
 
         try:
+            message_for_delivery = await self._resolve_channel_sender(max_chat_id, msg)
             tg_msg_id = await self._send_message_to_telegram(
                 telegram_user_id=telegram_user_id,
                 topic_id=topic_id,
-                msg=msg,
+                msg=message_for_delivery,
             )
         except Exception as exc:
             await self._audit_repo.log(
@@ -338,6 +339,18 @@ class InboundSyncService:
             )
         )
         return True
+
+    async def _resolve_channel_sender(
+        self, max_chat_id: str, msg: dict[str, Any]
+    ) -> dict[str, Any]:
+        if msg.get("sender_id") != 0:
+            return msg
+
+        chat = await self._max_chat_repo.get(max_chat_id)
+        title = chat.title.strip() if chat is not None else ""
+        if not title:
+            return msg
+        return {**msg, "sender_name": title}
 
     async def _send_message_to_telegram(
         self,
@@ -470,13 +483,16 @@ class InboundSyncService:
 
     def _render_prefix(self, msg: dict[str, Any]) -> str:
         sender_name = str(msg.get("sender_name") or "Unknown").strip()
-        sender_id = str(msg.get("sender_id") or "UnknownID").strip()
+        raw_sender_id = msg.get("sender_id")
         raw_time = msg.get("time")
         if raw_time:
             timestamp = datetime.fromtimestamp(int(raw_time) / 1000, tz=UTC)
             formatted_time = timestamp.strftime("%d.%m.%y %H:%M")
         else:
             formatted_time = "??.??.?? ??:??"
+        if raw_sender_id == 0:
+            return f"[{sender_name} {formatted_time}]"
+        sender_id = str(raw_sender_id or "UnknownID").strip()
         return f"[{sender_name} {sender_id} {formatted_time}]"
 
     def _should_ignore_live_message(self, msg: dict[str, Any]) -> bool:
