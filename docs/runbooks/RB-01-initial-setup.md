@@ -50,3 +50,13 @@ First-time deployment. Bot does not start, or starts but users cannot authentica
    ```bash
    docker compose logs -f maxlinkbot
    ```
+
+   At startup, verify which Git commit the running image was built from:
+
+   ```text
+   MaxLinkBot starting git_commit_sha=<40-character commit SHA>
+   ```
+
+   `git_commit_sha=unknown` means the image was built without the
+   `GIT_COMMIT_SHA` Docker build argument. Published GHCR images receive the
+   exact GitHub Actions commit SHA automatically.

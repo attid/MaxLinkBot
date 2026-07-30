@@ -1,5 +1,11 @@
 FROM python:3.13-slim
 
+ARG GIT_COMMIT_SHA=unknown
+
+LABEL org.opencontainers.image.revision="${GIT_COMMIT_SHA}"
+
+ENV GIT_COMMIT_SHA="${GIT_COMMIT_SHA}"
+
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./

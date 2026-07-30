@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -55,3 +56,15 @@ def test_settings_reads_telegram_api_url_from_environment(
     settings = main_module.Settings(telegram_bot_token=BOT_TOKEN)
 
     assert settings.telegram_api_url == "https://api.mtlminiapps.us"
+
+
+def test_log_startup_includes_image_commit_sha(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("GIT_COMMIT_SHA", "abc123def456")
+
+    with caplog.at_level(logging.INFO, logger="src.main"):
+        main_module.log_startup()
+
+    assert "MaxLinkBot starting git_commit_sha=abc123def456" in caplog.text

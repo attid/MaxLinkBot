@@ -88,14 +88,19 @@ def create_bot(token: str, api_url: str | None) -> Bot:
     return Bot(token=token, session=session)
 
 
+def log_startup() -> None:
+    git_commit_sha = os.environ.get("GIT_COMMIT_SHA", "").strip() or "unknown"
+    logger.info("MaxLinkBot starting git_commit_sha=%s", git_commit_sha)
+
+
 async def main() -> None:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    log_startup()
     settings = Settings()  # type: ignore[call-args]
-    logger.info("MaxLinkBot starting...")
 
     # Database
     db = Database(DatabaseSettings(database_url=settings.database_url))
