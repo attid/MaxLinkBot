@@ -539,6 +539,32 @@ async def test_get_messages_resolves_dict_linked_video_using_top_level_message_i
 
 
 @pytest.mark.asyncio
+async def test_drain_buffered_messages_resolves_numeric_live_sender() -> None:
+    raw_message = SimpleNamespace(
+        chat_id=100,
+        id=42,
+        text="hello",
+        sender=192875451,
+        time=123,
+        type="USER",
+        description="",
+        attaches=[],
+        link=None,
+    )
+    user = SimpleNamespace(names=[SimpleNamespace(name="Igor", first_name="Igor", last_name="")])
+    client = MagicMock()
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+    adapter = PymaxAdapter(client)
+
+    await adapter._buffer_message(raw_message)  # type: ignore[reportPrivateUsage]
+    messages = await adapter.drain_buffered_messages()
+
+    assert messages[0]["sender_id"] == 192875451
+    assert messages[0]["sender_name"] == "Igor"
+
+
+@pytest.mark.asyncio
 async def test_drain_buffered_messages_uses_linked_forward_photo_metadata_when_top_level_message_is_empty() -> (
     None
 ):

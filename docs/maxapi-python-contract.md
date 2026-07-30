@@ -39,6 +39,10 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
 - For inbound polling, adapter code must not assume that `WebClient.fetch_history()` is ordered `newest -> oldest`; filtering by cursor has to scan the whole returned batch instead of stopping at the first old message.
 - `WebClient` supports live inbound handling through `on_message()`; the adapter buffers
   handler events and the application drains them as the primary `MAX -> Telegram` transport.
+- PyMax 2.3.1 `Message` exposes the sender identifier as `sender: int | None`,
+  without a separate `sender_id` field. History and live paths both normalize
+  this field into the adapter's `sender_id` and resolve `sender_name` through the
+  MAX user cache/API.
 - `on_start()` runs again after a successful reconnect and is used as the adapter's
   reconnect signal.
 - While `WebClient.start()` is running, shutdown has a single owner: the adapter

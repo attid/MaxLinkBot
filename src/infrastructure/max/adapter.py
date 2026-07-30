@@ -725,6 +725,8 @@ class PymaxAdapter(MaxClientPort):
 
     async def _buffer_message(self, msg: Any) -> None:
         content = self._select_content_source_message(msg)
+        sender_id = self._extract_sender_id(msg)
+        sender_name = await self._resolve_sender_name(msg)
         raw_type = self._field(content, "type")
         text = self._field(content, "text") or ""
         normalized_type = self._normalize_live_message_type(raw_type, text)
@@ -747,8 +749,8 @@ class PymaxAdapter(MaxClientPort):
                     chat_id=msg.chat_id,
                     id=int(str(msg.id)),
                     text=text,
-                    sender_id=getattr(msg, "sender_id", None) or 0,
-                    sender=getattr(msg, "sender", None) or "",
+                    sender_id=sender_id,
+                    sender=sender_name,
                     time=getattr(msg, "time", None) or 0,
                     type=media_type or normalized_type,
                     description=str(self._field(content, "description") or ""),
