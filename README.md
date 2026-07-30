@@ -30,6 +30,7 @@ All configuration is via environment variables.
 | Variable | Required | Description |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
+| `TELEGRAM_API_URL` | No | Root URL of a Telegram Bot API proxy; standard Telegram API when unset |
 | `ALLOWED_TELEGRAM_USER_IDS` | Yes | Comma-separated list of allowed Telegram user IDs |
 | `MAX_WORK_DIR` | No | Directory for per-user MAX session data |
 | `DATABASE_URL` | Yes | SQLite path, e.g. `sqlite+aiosqlite:///data/maxlinkbot.db` |

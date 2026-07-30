@@ -2,16 +2,56 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-from src.main import configure_bot_commands
+import pytest
+
+from src import main as main_module
+
+BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
 
 
 async def test_configure_bot_commands_registers_start() -> None:
     bot = AsyncMock()
 
-    await configure_bot_commands(bot)
+    await main_module.configure_bot_commands(bot)
 
     bot.set_my_commands.assert_awaited_once()
     commands = bot.set_my_commands.await_args.args[0]
     assert len(commands) == 2
     assert commands[0].command == "start"
     assert commands[1].command == "resync"
+
+
+async def test_create_bot_uses_standard_telegram_api_by_default() -> None:
+    bot = main_module.create_bot(token=BOT_TOKEN, api_url=None)
+
+    assert bot.session.api.api_url(BOT_TOKEN, "getMe") == (
+        f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+    )
+    await bot.session.close()
+
+
+async def test_create_bot_uses_custom_api_for_methods_and_files() -> None:
+    bot = main_module.create_bot(
+        token=BOT_TOKEN,
+        api_url=" https://api.mtlminiapps.us/ ",
+    )
+
+    assert bot.session.api.api_url(BOT_TOKEN, "getMe") == (
+        f"https://api.mtlminiapps.us/bot{BOT_TOKEN}/getMe"
+    )
+    assert bot.session.api.file_url(BOT_TOKEN, "documents/file.txt") == (
+        f"https://api.mtlminiapps.us/file/bot{BOT_TOKEN}/documents/file.txt"
+    )
+    assert bot.session.api.is_local is False
+    await bot.session.close()
+
+
+def test_settings_reads_telegram_api_url_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("TELEGRAM_API_URL", "https://api.mtlminiapps.us")
+
+    settings = main_module.Settings(telegram_bot_token=BOT_TOKEN)
+
+    assert settings.telegram_api_url == "https://api.mtlminiapps.us"

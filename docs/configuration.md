@@ -19,6 +19,7 @@ Environment variables are the only configuration mechanism.
 | Variable | Default | Description |
 |---|---|---|
 | `ALLOWED_TELEGRAM_USER_IDS` | `""` | Comma-separated Telegram user IDs (empty = no one allowed) |
+| `TELEGRAM_API_URL` | unset | Base URL of a Telegram Bot API proxy; unset or blank uses `https://api.telegram.org` |
 | `MAX_WORK_DIR` | `/data/max_sessions` | Directory for per-user MAX session data |
 | `DATABASE_URL` | `sqlite+aiosqlite:////data/maxlinkbot.db` | SQLite connection string |
 | `POLL_INTERVAL_SECONDS` | `30` | Background poll interval per active binding |
@@ -41,6 +42,19 @@ ALLOWED_TELEGRAM_USER_IDS="123456789,987654321"
 ```
 
 No spaces.
+
+## TELEGRAM_API_URL Format
+
+Set only the root URL of the Telegram Bot API proxy:
+
+```text
+TELEGRAM_API_URL=https://api.mtlminiapps.us
+```
+
+Do not add `/bot{token}/{method}` or `/file/bot{token}/{path}`. The aiogram
+session builds both routes from the configured root URL. A trailing slash is
+accepted and normalized. If the variable is unset, empty, or contains only
+spaces, the bot uses the standard Telegram API.
 
 ## DATABASE_URL Format
 

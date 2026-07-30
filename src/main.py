@@ -7,6 +7,8 @@ import logging
 import os
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import BotCommand
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,6 +44,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
     telegram_bot_token: str
+    telegram_api_url: str | None = None
     allowed_telegram_user_ids: str = ""
     max_work_dir: str = "/data/max_sessions"
     database_url: str = "sqlite+aiosqlite:////data/maxlinkbot.db"
@@ -76,6 +79,15 @@ async def configure_bot_commands(bot: Bot) -> None:
     )
 
 
+def create_bot(token: str, api_url: str | None) -> Bot:
+    custom_api_url = (api_url or "").strip()
+    if not custom_api_url:
+        return Bot(token=token)
+
+    session = AiohttpSession(api=TelegramAPIServer.from_base(custom_api_url))
+    return Bot(token=token, session=session)
+
+
 async def main() -> None:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -105,7 +117,10 @@ async def main() -> None:
     shared_max_runtime = MaxClientRuntimeRegistry(live_max_factory)
 
     # Telegram client + bot
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = create_bot(
+        token=settings.telegram_bot_token,
+        api_url=settings.telegram_api_url,
+    )
     await configure_bot_commands(bot)
     tg_client = AiogramTelegramAdapter(bot)
 
