@@ -62,6 +62,10 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   The adapter resolves a temporary download URL through `WebClient.get_file_by_id()`.
 - Incoming `VideoAttachment` contains `video_id` but no direct URL. The adapter resolves
   it through `WebClient.get_video_by_id()` using the top-level message ID.
+- MAX may return video playback URLs as dynamic `MP4_<quality>` keys without the
+  `cache` field required by the released PyMax 2.3.1 `VideoRequest`. Until the
+  upstream fix is released, the adapter recovers the highest available MP4 URL
+  from Pydantic's validation input; signed URLs are never written to logs.
 - In PyMax 2.3 history, forwarded `link.message` may remain a plain camelCase dict
   instead of a typed model. The adapter supports both dict-shaped and object-shaped
   linked content and preserves the top-level message ID for video URL resolution.

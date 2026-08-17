@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import qrcode
+from pydantic import ValidationError
 from pymax import ExtraConfig, File, Photo, WebClient
 from pymax.exceptions import ApiError
 from pymax.protocol.enums import Opcode
@@ -428,7 +429,7 @@ class PymaxAdapter(MaxClientPort):
             video_id = self._field(attach, "video_id", "videoId")
             if not isinstance(video_id, int):
                 return None
-            with suppress(Exception):
+            try:
                 video_request = await self._client.get_video_by_id(
                     chat_id,
                     message_id,
@@ -437,8 +438,59 @@ class PymaxAdapter(MaxClientPort):
                 url = getattr(video_request, "url", None)
                 if isinstance(url, str) and url.strip():
                     return url.strip()
+            except ValidationError as exc:
+                fallback_url = self._extract_video_url_from_validation_error(exc)
+                if fallback_url:
+                    logger.warning(
+                        "max video URL compatibility fallback chat_id=%s message_id=%s video_id=%s",
+                        chat_id,
+                        message_id,
+                        video_id,
+                    )
+                    return fallback_url
+                logger.warning(
+                    "max video URL validation failed chat_id=%s message_id=%s video_id=%s error_types=%s",
+                    chat_id,
+                    message_id,
+                    video_id,
+                    [error.get("type") for error in exc.errors()],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "max video URL lookup failed chat_id=%s message_id=%s video_id=%s error_type=%s",
+                    chat_id,
+                    message_id,
+                    video_id,
+                    type(exc).__name__,
+                )
             return None
         return None
+
+    def _extract_video_url_from_validation_error(self, exc: ValidationError) -> str | None:
+        candidates: list[tuple[int, str]] = []
+        legacy_url: str | None = None
+        for error in exc.errors():
+            input_value = error.get("input")
+            if not isinstance(input_value, dict):
+                continue
+            payload = cast(dict[str, Any], input_value)
+            for key, value in payload.items():
+                if not isinstance(value, str):
+                    continue
+                normalized_key = key.upper()
+                if normalized_key.startswith("MP4_"):
+                    try:
+                        quality = int(normalized_key.removeprefix("MP4_"))
+                    except ValueError:
+                        continue
+                    if quality > 0:
+                        candidates.append((quality, value))
+                elif key in {"dynamicUrl", "dynamic_url"}:
+                    legacy_url = value
+
+        if candidates:
+            return max(candidates, key=lambda item: item[0])[1]
+        return legacy_url
 
     def _field(self, value: Any, name: str, *aliases: str) -> Any:
         if isinstance(value, dict):

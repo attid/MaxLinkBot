@@ -8,8 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 from pymax import File, Photo
 from pymax.exceptions import ApiError
+from pymax.types.domain.attachments.video import VideoRequest
 
 from src.application.auth.exceptions import AuthError
 from src.infrastructure.max import adapter as adapter_module
@@ -383,6 +385,48 @@ async def test_get_messages_resolves_direct_video_attach_url() -> None:
     assert messages[0]["file_name"] == "video.mp4"
     assert messages[0]["text"] == "Video caption"
     client.get_video_by_id.assert_awaited_once_with(0, 42, 777)
+
+
+@pytest.mark.asyncio
+async def test_get_messages_recovers_dynamic_video_url_from_pymax_validation_error() -> None:
+    raw_message = SimpleNamespace(
+        id=117110862086738596,
+        text="",
+        sender=5079376,
+        sender_id=None,
+        time=1786969941509,
+        type="USER",
+        description=None,
+        attaches=[
+            SimpleNamespace(
+                type=SimpleNamespace(name="VIDEO", value="VIDEO"),
+                video_id=3112890335312,
+                duration=48045,
+                width=480,
+                height=480,
+            )
+        ],
+    )
+    with pytest.raises(ValidationError) as exc_info:
+        VideoRequest.model_validate(
+            {
+                "MP4_360": "https://example.com/video-360.mp4",
+                "MP4_480": "https://example.com/video-480.mp4",
+            }
+        )
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=None)
+    client.fetch_users = AsyncMock(return_value=[])
+    client.get_video_by_id = AsyncMock(side_effect=exc_info.value)
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("187861739", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "video"
+    assert messages[0]["media_url"] == "https://example.com/video-480.mp4"
+    assert messages[0]["file_name"] == "video.mp4"
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@ ENV/
 .ruff_cache/
 .mypy_cache/
 .pyright/
+.belief_map.sexp
+.belief_map_cache.json
 .coverage
 .coverage.*
 htmlcov/
