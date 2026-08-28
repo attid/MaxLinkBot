@@ -7,3 +7,5 @@ class TelegramTopic(BaseModel):
     telegram_topic_id: int
     telegram_user_id: int
     max_chat_id: str  # references MaxChat.max_chat_id
+    inbound_enabled: bool = True
+    inbound_since_ms: int | None = None

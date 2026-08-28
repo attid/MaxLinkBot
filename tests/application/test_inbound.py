@@ -18,6 +18,7 @@ from src.application.ports.repositories import (
 )
 from src.application.ports.telegram_client import TelegramClient
 from src.application.routing.inbound import InboundSyncService
+from src.domain.chats.topic import TelegramTopic
 
 
 class MockRepos:
@@ -121,6 +122,55 @@ class TestInboundSyncService:
         max_client.close.assert_not_called()
         factory.assert_called_once_with(123, "token")
         repos.telegram.send_text_to_topic.assert_awaited_once()
+
+    async def test_poll_user_ignores_live_message_for_muted_topic(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=TelegramTopic(
+                telegram_topic_id=50,
+                telegram_user_id=123,
+                max_chat_id="chat1",
+                inbound_enabled=False,
+            )
+        )
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=100)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(
+            return_value=[
+                {
+                    "max_message_id": "1",
+                    "chat_id": "chat1",
+                    "type": "text",
+                    "text": "Muted",
+                }
+            ]
+        )
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(return_value=[])
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        repos.telegram.send_text_to_topic.assert_not_awaited()
+        repos.message_link_repo.save.assert_not_awaited()
+        repos.cursor_repo.upsert.assert_not_awaited()
 
     async def test_deliver_channel_message_uses_chat_title_without_sender_id(self) -> None:
         repos = MockRepos()
@@ -667,6 +717,43 @@ class TestInboundSyncService:
 
         max_client.get_messages.assert_awaited_once_with("chat1", since_message_id=None, limit=50)
 
+    async def test_poll_user_skips_history_for_muted_topic(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock(
+            return_value=MagicMock(telegram_user_id=123, max_session_data="token")
+        )
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[
+                TelegramTopic(
+                    telegram_topic_id=50,
+                    telegram_user_id=123,
+                    max_chat_id="chat1",
+                    inbound_enabled=False,
+                )
+            ]
+        )
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.drain_buffered_messages = AsyncMock(return_value=[])
+        max_client.consume_reconnect_event = AsyncMock(return_value=False)
+        max_client.get_messages = AsyncMock(return_value=[])
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            catchup_interval_seconds=0,
+        )
+
+        await service.poll_user(telegram_user_id=123)
+
+        max_client.get_messages.assert_not_awaited()
+
     async def test_poll_user_polls_only_dirty_chats_between_hourly_catchups(self) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock(
@@ -1074,6 +1161,53 @@ class TestInboundSyncService:
         assert repos.message_link_repo.save.call_count == 2
         repos.cursor_repo.upsert.assert_called_once()
         max_client.close.assert_not_called()
+
+    async def test_poll_chat_skips_backlog_from_before_unmute(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock()
+        repos.topic_repo.get_by_user_and_chat = AsyncMock(
+            return_value=TelegramTopic(
+                telegram_topic_id=50,
+                telegram_user_id=123,
+                max_chat_id="chat1",
+                inbound_since_ms=2_000,
+            )
+        )
+        repos.cursor_repo.get = AsyncMock(return_value=None)
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.cursor_repo.upsert = AsyncMock()
+        repos.telegram.send_text_to_topic = AsyncMock(return_value=101)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.get_messages = AsyncMock(
+            return_value=[
+                {"max_message_id": 10, "type": "text", "text": "Old", "time": 1_999},
+                {"max_message_id": 11, "type": "text", "text": "New", "time": 2_001},
+            ]
+        )
+
+        service = InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+        )
+
+        await service.poll_chat(telegram_user_id=123, max_chat_id="chat1")
+
+        repos.telegram.send_text_to_topic.assert_awaited_once()
+        telegram_call = repos.telegram.send_text_to_topic.await_args
+        cursor_call = repos.cursor_repo.upsert.await_args
+        assert telegram_call is not None
+        assert cursor_call is not None
+        assert telegram_call.kwargs["text"].endswith("New")
+        saved_cursor = cursor_call.args[0]
+        assert saved_cursor.last_max_message_id == "11"
 
     async def test_poll_chat_idempotency_skips_already_delivered(self) -> None:
         """Already-delivered messages are skipped."""

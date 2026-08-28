@@ -10,16 +10,19 @@ from src import main as main_module
 BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
 
 
-async def test_configure_bot_commands_registers_start() -> None:
+async def test_configure_bot_commands_registers_supported_commands() -> None:
     bot = AsyncMock()
 
     await main_module.configure_bot_commands(bot)
 
     bot.set_my_commands.assert_awaited_once()
     commands = bot.set_my_commands.await_args.args[0]
-    assert len(commands) == 2
-    assert commands[0].command == "start"
-    assert commands[1].command == "resync"
+    assert [command.command for command in commands] == [
+        "start",
+        "resync",
+        "mute",
+        "unmute",
+    ]
 
 
 async def test_create_bot_uses_standard_telegram_api_by_default() -> None:

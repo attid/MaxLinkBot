@@ -91,6 +91,47 @@ class TestMaxChatRepositoryIsolation:
 
 
 class TestTelegramTopicRepositoryIsolation:
+    async def test_topic_inbound_enabled_defaults_to_true(self, db_with_bindings: Database) -> None:
+        topic_repo = SqliteTelegramTopicRepository(db_with_bindings)
+
+        await topic_repo.save(
+            TelegramTopic(
+                telegram_topic_id=10,
+                telegram_user_id=100,
+                max_chat_id="chat_X",
+            )
+        )
+
+        topic = await topic_repo.get_by_user_and_topic(100, 10)
+
+        assert topic is not None
+        assert topic.inbound_enabled is True
+
+    async def test_set_inbound_enabled_is_scoped_to_topic_owner(
+        self, db_with_bindings: Database
+    ) -> None:
+        topic_repo = SqliteTelegramTopicRepository(db_with_bindings)
+        await topic_repo.save(
+            TelegramTopic(
+                telegram_topic_id=10,
+                telegram_user_id=100,
+                max_chat_id="chat_X",
+            )
+        )
+
+        updated_by_other_user = await topic_repo.set_inbound_enabled(200, 10, False)
+        updated_by_owner = await topic_repo.set_inbound_enabled(100, 10, False)
+        unmuted_by_owner = await topic_repo.set_inbound_enabled(100, 10, True)
+        topic = await topic_repo.get_by_user_and_topic(100, 10)
+
+        assert updated_by_other_user is False
+        assert updated_by_owner is True
+        assert unmuted_by_owner is True
+        assert topic is not None
+        assert topic.inbound_enabled is True
+        assert topic.inbound_since_ms is not None
+        assert topic.inbound_since_ms > 0
+
     async def test_topic_unique_per_user_and_chat(self, db_with_bindings: Database) -> None:
         topic_repo = SqliteTelegramTopicRepository(db_with_bindings)
 
@@ -120,3 +161,38 @@ class TestTelegramTopicRepositoryIsolation:
         # User 100 cannot resolve user 200's topic
         t_wrong = await topic_repo.get_by_user_and_chat(100, "chat_Y")
         assert t_wrong is None
+
+
+async def test_init_schema_adds_inbound_enabled_to_existing_topics_table() -> None:
+    db = Database(DatabaseSettings(database_url="sqlite+aiosqlite:///:memory:"))
+    await db.connect()
+    try:
+        assert db._conn is not None  # type: ignore[reportPrivateUsage]
+        await db._conn.executescript(  # type: ignore[reportPrivateUsage]
+            """
+            CREATE TABLE telegram_topics (
+                telegram_topic_id INTEGER PRIMARY KEY,
+                telegram_user_id INTEGER NOT NULL,
+                max_chat_id TEXT NOT NULL
+            );
+            INSERT INTO telegram_topics (telegram_topic_id, telegram_user_id, max_chat_id)
+            VALUES (10, 100, 'chat_X');
+            """
+        )
+        await db.commit()
+
+        await init_schema(db)
+
+        columns = await db.fetchall("PRAGMA table_info(telegram_topics)")
+        topic = await db.fetchone(
+            "SELECT inbound_enabled, inbound_since_ms "
+            "FROM telegram_topics WHERE telegram_topic_id = ?",
+            10,
+        )
+        assert "inbound_enabled" in {str(column["name"]) for column in columns}
+        assert "inbound_since_ms" in {str(column["name"]) for column in columns}
+        assert topic is not None
+        assert topic["inbound_enabled"] == 1
+        assert topic["inbound_since_ms"] is None
+    finally:
+        await db.close()

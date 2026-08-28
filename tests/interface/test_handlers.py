@@ -16,6 +16,13 @@ def _get_message_handler(router: Router):
     raise AssertionError("handle_message callback not found")
 
 
+def _get_named_handler(router: Router, name: str):
+    for handler in router.observers["message"].handlers:
+        if handler.callback.__name__ == name:
+            return handler.callback
+    raise AssertionError(f"{name} callback not found")
+
+
 async def test_handle_message_forwards_topic_photo_to_max() -> None:
     router = Router()
     allowlist_gate = MagicMock()
@@ -25,6 +32,7 @@ async def test_handle_message_forwards_topic_photo_to_max() -> None:
     outbound_service = MagicMock()
     outbound_service.deliver = AsyncMock()
     outbound_service.deliver_photo = AsyncMock(return_value="max-photo-id")
+    topic_mute_service = MagicMock()
     telegram_client = MagicMock()
 
     register_handlers(
@@ -33,6 +41,7 @@ async def test_handle_message_forwards_topic_photo_to_max() -> None:
         auth_service,
         reconcile_service,
         outbound_service,
+        topic_mute_service,
         telegram_client,
     )
 
@@ -77,6 +86,7 @@ async def test_handle_message_forwards_topic_document_to_max() -> None:
     outbound_service = MagicMock()
     outbound_service.deliver = AsyncMock()
     outbound_service.deliver_file = AsyncMock(return_value="max-file-id")
+    topic_mute_service = MagicMock()
     telegram_client = MagicMock()
 
     register_handlers(
@@ -85,6 +95,7 @@ async def test_handle_message_forwards_topic_document_to_max() -> None:
         auth_service,
         reconcile_service,
         outbound_service,
+        topic_mute_service,
         telegram_client,
     )
 
@@ -119,3 +130,114 @@ async def test_handle_message_forwards_topic_document_to_max() -> None:
         filename="spec.pdf",
         caption="Spec file",
     )
+
+
+async def test_handle_mute_disables_inbound_for_current_topic() -> None:
+    router = Router()
+    allowlist_gate = MagicMock()
+    allowlist_gate.is_allowed.return_value = True
+    topic_mute_service = MagicMock()
+    topic_mute_service.mute = AsyncMock(return_value=True)
+
+    register_handlers(
+        router,
+        allowlist_gate,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        topic_mute_service,
+        MagicMock(),
+    )
+    callback = _get_named_handler(router, "handle_mute")
+    message = MagicMock()
+    message.from_user = SimpleNamespace(id=123)
+    message.message_thread_id = 50
+    message.answer = AsyncMock()
+
+    await callback(message)
+
+    topic_mute_service.mute.assert_awaited_once_with(123, 50)
+    message.answer.assert_awaited_once_with("Incoming MAX messages muted for this topic.")
+
+
+async def test_handle_unmute_enables_inbound_for_current_topic() -> None:
+    router = Router()
+    allowlist_gate = MagicMock()
+    allowlist_gate.is_allowed.return_value = True
+    topic_mute_service = MagicMock()
+    topic_mute_service.unmute = AsyncMock(return_value=True)
+
+    register_handlers(
+        router,
+        allowlist_gate,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        topic_mute_service,
+        MagicMock(),
+    )
+    callback = _get_named_handler(router, "handle_unmute")
+    message = MagicMock()
+    message.from_user = SimpleNamespace(id=123)
+    message.message_thread_id = 50
+    message.answer = AsyncMock()
+
+    await callback(message)
+
+    topic_mute_service.unmute.assert_awaited_once_with(123, 50)
+    message.answer.assert_awaited_once_with("Incoming MAX messages enabled for this topic.")
+
+
+async def test_handle_mute_requires_mapped_topic() -> None:
+    router = Router()
+    allowlist_gate = MagicMock()
+    allowlist_gate.is_allowed.return_value = True
+    topic_mute_service = MagicMock()
+    topic_mute_service.mute = AsyncMock(return_value=False)
+
+    register_handlers(
+        router,
+        allowlist_gate,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        topic_mute_service,
+        MagicMock(),
+    )
+    callback = _get_named_handler(router, "handle_mute")
+    message = MagicMock()
+    message.from_user = SimpleNamespace(id=123)
+    message.message_thread_id = 999
+    message.answer = AsyncMock()
+
+    await callback(message)
+
+    message.answer.assert_awaited_once_with("This topic is not mapped to a MAX chat.")
+
+
+async def test_handle_mute_outside_topic_explains_usage() -> None:
+    router = Router()
+    allowlist_gate = MagicMock()
+    allowlist_gate.is_allowed.return_value = True
+    topic_mute_service = MagicMock()
+    topic_mute_service.mute = AsyncMock()
+
+    register_handlers(
+        router,
+        allowlist_gate,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        topic_mute_service,
+        MagicMock(),
+    )
+    callback = _get_named_handler(router, "handle_mute")
+    message = MagicMock()
+    message.from_user = SimpleNamespace(id=123)
+    message.message_thread_id = None
+    message.answer = AsyncMock()
+
+    await callback(message)
+
+    topic_mute_service.mute.assert_not_awaited()
+    message.answer.assert_awaited_once_with("Use /mute inside a mapped topic.")

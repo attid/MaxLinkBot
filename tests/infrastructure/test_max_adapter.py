@@ -213,6 +213,64 @@ async def test_list_personal_chats_uses_other_participant_name_for_dialog_title(
 
 
 @pytest.mark.asyncio
+async def test_get_chat_state_reports_unsubscribed_channel_membership() -> None:
+    stale_chat = SimpleNamespace(
+        id=-75032416815636,
+        title="Новокриницкие от 0 до года",
+        type="CHANNEL",
+        owner=0,
+        participants={192875451: 0},
+    )
+    fresh_chat = SimpleNamespace(
+        id=-75032416815636,
+        title="Новокриницкие от 0 до года",
+        type="CHANNEL",
+        owner=0,
+        participants={},
+    )
+    client = MagicMock()
+    client.me = SimpleNamespace(contact=SimpleNamespace(id=192875451))
+    client.chats = [stale_chat]
+
+    async def get_chat(chat_id: int):
+        assert chat_id == -75032416815636
+        assert all(chat.id != chat_id for chat in client.chats)
+        return fresh_chat
+
+    client.get_chat = AsyncMock(side_effect=get_chat)
+
+    state = await PymaxAdapter(client).get_chat_state("-75032416815636")
+
+    assert state == {
+        "max_chat_id": "-75032416815636",
+        "title": "Новокриницкие от 0 до года",
+        "participant_ids": [],
+        "chat_type": "CHANNEL",
+        "is_current_user_member": False,
+    }
+    client.get_chat.assert_awaited_once_with(-75032416815636)
+
+
+@pytest.mark.asyncio
+async def test_get_chat_state_reports_subscribed_channel_membership() -> None:
+    chat = SimpleNamespace(
+        id=-69679794189655,
+        title="Аттракционы Ривьера Сочи.",
+        type="CHANNEL",
+        owner=0,
+        participants={192875451: 0},
+    )
+    client = MagicMock()
+    client.me = SimpleNamespace(contact=SimpleNamespace(id=192875451))
+    client.get_chat = AsyncMock(return_value=chat)
+
+    state = await PymaxAdapter(client).get_chat_state("-69679794189655")
+
+    assert state is not None
+    assert state.get("is_current_user_member") is True
+
+
+@pytest.mark.asyncio
 async def test_get_messages_uses_cached_sender_name_when_available() -> None:
     raw_message = MagicMock()
     raw_message.id = 42

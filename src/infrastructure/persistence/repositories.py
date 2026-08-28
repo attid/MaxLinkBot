@@ -139,7 +139,8 @@ class SqliteTelegramTopicRepository(TelegramTopicRepository):
         self, telegram_user_id: int, max_chat_id: str
     ) -> TelegramTopic | None:
         row = await self._db.fetchone(
-            "SELECT telegram_topic_id, telegram_user_id, max_chat_id "
+            "SELECT telegram_topic_id, telegram_user_id, max_chat_id, "
+            "inbound_enabled, inbound_since_ms "
             "FROM telegram_topics "
             "WHERE telegram_user_id = ? AND max_chat_id = ?",
             telegram_user_id,
@@ -151,13 +152,16 @@ class SqliteTelegramTopicRepository(TelegramTopicRepository):
             telegram_topic_id=row["telegram_topic_id"],
             telegram_user_id=row["telegram_user_id"],
             max_chat_id=row["max_chat_id"],
+            inbound_enabled=bool(row["inbound_enabled"]),
+            inbound_since_ms=row["inbound_since_ms"],
         )
 
     async def get_by_user_and_topic(
         self, telegram_user_id: int, telegram_topic_id: int
     ) -> TelegramTopic | None:
         row = await self._db.fetchone(
-            "SELECT telegram_topic_id, telegram_user_id, max_chat_id "
+            "SELECT telegram_topic_id, telegram_user_id, max_chat_id, "
+            "inbound_enabled, inbound_since_ms "
             "FROM telegram_topics "
             "WHERE telegram_user_id = ? AND telegram_topic_id = ?",
             telegram_user_id,
@@ -169,11 +173,14 @@ class SqliteTelegramTopicRepository(TelegramTopicRepository):
             telegram_topic_id=row["telegram_topic_id"],
             telegram_user_id=row["telegram_user_id"],
             max_chat_id=row["max_chat_id"],
+            inbound_enabled=bool(row["inbound_enabled"]),
+            inbound_since_ms=row["inbound_since_ms"],
         )
 
     async def find_by_user(self, telegram_user_id: int) -> list[TelegramTopic]:
         rows = await self._db.fetchall(
-            "SELECT telegram_topic_id, telegram_user_id, max_chat_id "
+            "SELECT telegram_topic_id, telegram_user_id, max_chat_id, "
+            "inbound_enabled, inbound_since_ms "
             "FROM telegram_topics WHERE telegram_user_id = ?",
             telegram_user_id,
         )
@@ -182,6 +189,8 @@ class SqliteTelegramTopicRepository(TelegramTopicRepository):
                 telegram_topic_id=r["telegram_topic_id"],
                 telegram_user_id=r["telegram_user_id"],
                 max_chat_id=r["max_chat_id"],
+                inbound_enabled=bool(r["inbound_enabled"]),
+                inbound_since_ms=r["inbound_since_ms"],
             )
             for r in rows
         ]
@@ -189,13 +198,35 @@ class SqliteTelegramTopicRepository(TelegramTopicRepository):
     async def save(self, topic: TelegramTopic) -> None:
         await self._db.execute(  # type: ignore[reportAttributeAccessIssue]
             "INSERT OR REPLACE INTO telegram_topics "
-            "(telegram_topic_id, telegram_user_id, max_chat_id) "
-            "VALUES (?, ?, ?)",
+            "(telegram_topic_id, telegram_user_id, max_chat_id, "
+            "inbound_enabled, inbound_since_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
             topic.telegram_topic_id,
             topic.telegram_user_id,
             topic.max_chat_id,
+            int(topic.inbound_enabled),
+            topic.inbound_since_ms,
         )
         await self._db.commit()
+
+    async def set_inbound_enabled(
+        self,
+        telegram_user_id: int,
+        telegram_topic_id: int,
+        enabled: bool,
+    ) -> bool:
+        cursor = await self._db.execute(  # type: ignore[reportAttributeAccessIssue]
+            "UPDATE telegram_topics SET inbound_enabled = ?, "
+            "inbound_since_ms = CASE WHEN ? = 1 THEN ? ELSE inbound_since_ms END "
+            "WHERE telegram_user_id = ? AND telegram_topic_id = ?",
+            int(enabled),
+            int(enabled),
+            int(time.time() * 1000),
+            telegram_user_id,
+            telegram_topic_id,
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
 
 class SqliteMessageLinkRepository(MessageLinkRepository):

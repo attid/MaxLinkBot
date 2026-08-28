@@ -83,6 +83,11 @@ src/
 - `sync_cursors`
 - `audit_events`
 
+`telegram_topics.inbound_enabled` is the persistent per-topic switch for the
+`MAX -> Telegram` direction. Disabling it does not remove the mapping and does
+not affect `Telegram -> MAX` delivery. `telegram_topics.inbound_since_ms` records
+the latest `/unmute` boundary so messages accumulated while muted are skipped.
+
 ## Ключевой риск
 
 Главная техническая сложность не в пересылке сообщений, а в строгом сохранении пользовательского контекста. Любой use case, poller или handler должен начинать работу с `telegram_user_id` и не иметь путей, позволяющих случайно использовать чужой binding или чужой topic mapping.

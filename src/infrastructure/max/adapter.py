@@ -178,6 +178,40 @@ class PymaxAdapter(MaxClientPort):
         )
         return chats
 
+    async def get_chat_state(self, max_chat_id: str) -> PersonalChatData | None:
+        chat_id = int(max_chat_id)
+        self._invalidate_cached_chat(chat_id)
+        chat = await self._client.get_chat(chat_id)
+        title = await self._resolve_chat_title(chat)
+        participants = getattr(chat, "participants", {}) or {}
+        participant_ids = [str(uid) for uid in participants]
+        chat_type = self._chat_type_name(chat)
+        state: PersonalChatData = {
+            "max_chat_id": str(chat.id),
+            "title": title,
+            "participant_ids": participant_ids,
+            "chat_type": chat_type,
+        }
+        current_user_id = self._current_user_id()
+        if chat_type == "CHANNEL" and current_user_id is not None:
+            state["is_current_user_member"] = current_user_id in participants
+        logger.info(
+            "max targeted chat state chat_id=%s chat_type=%s current_user_member=%s participant_count=%s",
+            chat.id,
+            chat_type,
+            state.get("is_current_user_member"),
+            len(participant_ids),
+        )
+        return state
+
+    def _invalidate_cached_chat(self, chat_id: int) -> None:
+        """Force pymax's targeted lookup to fetch the current server state."""
+        cached_chats = getattr(self._client, "chats", None)
+        if not isinstance(cached_chats, list):
+            return
+        typed_chats = cast(list[Any], cached_chats)
+        typed_chats[:] = [chat for chat in typed_chats if getattr(chat, "id", None) != chat_id]
+
     async def get_messages(
         self, max_chat_id: str, since_message_id: str | None, limit: int
     ) -> list[dict[str, Any]]:
@@ -559,6 +593,19 @@ class PymaxAdapter(MaxClientPort):
         if isinstance(value, str):
             return value.upper() == "DIALOG"
         return str(chat_type).upper().endswith("DIALOG")
+
+    def _chat_type_name(self, chat: Any) -> str:
+        chat_type = getattr(chat, "type", None)
+        value = getattr(chat_type, "value", chat_type)
+        if isinstance(value, str):
+            return value.strip().upper()
+        return str(value).strip().upper()
+
+    def _current_user_id(self) -> int | None:
+        profile = getattr(self._client, "me", None)
+        contact = getattr(profile, "contact", None)
+        user_id = getattr(contact, "id", None)
+        return user_id if isinstance(user_id, int) else None
 
     async def send_message(self, max_chat_id: str, text: str) -> str:
         msg = await self._client.send_message(text=text, chat_id=int(max_chat_id))

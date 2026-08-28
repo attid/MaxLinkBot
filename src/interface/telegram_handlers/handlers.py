@@ -15,6 +15,7 @@ from src.application.auth.exceptions import AuthError
 from src.application.ports.telegram_client import TelegramClient
 from src.application.reconcile.service import RefreshReconcileService
 from src.application.routing.outbound import OutboundSyncService
+from src.application.topics.mute import TopicMuteService
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def register_handlers(
     auth_service: AuthorizationFlowService,
     reconcile_service: RefreshReconcileService,
     outbound_service: OutboundSyncService,
+    topic_mute_service: TopicMuteService,
     telegram_client: TelegramClient,
 ) -> None:
     """Register all handlers on the router."""
@@ -149,6 +151,56 @@ def register_handlers(
             logger.exception("/resync unexpected error telegram_user_id=%s", telegram_user_id)
             await message.answer("Resync failed. Check logs and try /resync again.")
 
+    @router.message(Command("mute"))
+    async def handle_mute(message: Message) -> None:  # type: ignore[reportUnusedFunction]
+        if message.from_user is None:
+            return
+        telegram_user_id = message.from_user.id
+        if not allowlist_gate.is_allowed(telegram_user_id):
+            return
+        if message.message_thread_id is None:
+            await message.answer("Use /mute inside a mapped topic.")
+            return
+
+        updated = await topic_mute_service.mute(
+            telegram_user_id,
+            message.message_thread_id,
+        )
+        if not updated:
+            await message.answer("This topic is not mapped to a MAX chat.")
+            return
+        logger.info(
+            "/mute applied telegram_user_id=%s telegram_topic_id=%s",
+            telegram_user_id,
+            message.message_thread_id,
+        )
+        await message.answer("Incoming MAX messages muted for this topic.")
+
+    @router.message(Command("unmute"))
+    async def handle_unmute(message: Message) -> None:  # type: ignore[reportUnusedFunction]
+        if message.from_user is None:
+            return
+        telegram_user_id = message.from_user.id
+        if not allowlist_gate.is_allowed(telegram_user_id):
+            return
+        if message.message_thread_id is None:
+            await message.answer("Use /unmute inside a mapped topic.")
+            return
+
+        updated = await topic_mute_service.unmute(
+            telegram_user_id,
+            message.message_thread_id,
+        )
+        if not updated:
+            await message.answer("This topic is not mapped to a MAX chat.")
+            return
+        logger.info(
+            "/unmute applied telegram_user_id=%s telegram_topic_id=%s",
+            telegram_user_id,
+            message.message_thread_id,
+        )
+        await message.answer("Incoming MAX messages enabled for this topic.")
+
     @router.message()
     async def handle_message(message: Message) -> None:  # type: ignore[reportUnusedFunction]
         """Route all text messages: topic messages or main chat."""
@@ -223,5 +275,6 @@ def register_handlers(
         if not text:
             return
         await message.answer(
-            "Send /start to sync chats or /resync [max_chat_id] to rebuild topics."
+            "Send /start to sync chats, /resync [max_chat_id] to rebuild topics, "
+            "or use /mute and /unmute inside a topic."
         )

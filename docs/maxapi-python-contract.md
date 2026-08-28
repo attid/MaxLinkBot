@@ -46,6 +46,14 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
 - Channel publications may expose `sender=0` because they have no separate user
   sender. Inbound delivery uses the persisted MAX chat title as the source label
   and omits the meaningless sender ID from the Telegram prefix.
+- A departed public channel may remain available through targeted `get_chat()`
+  with `status='ACTIVE'`, so chat status is not a reliable subscription signal.
+  In verified PyMax 2.3.1 responses, the current MAX account ID is present in
+  `Chat.participants` for a subscribed channel and absent after departure.
+- `fetch_chats()` may omit a departed channel while its public history remains
+  readable by chat ID. Reconcile therefore uses a targeted chat lookup for stale
+  topic mappings and disables inbound synchronization only when channel
+  non-membership is explicitly confirmed.
 - `on_start()` runs again after a successful reconnect and is used as the adapter's
   reconnect signal.
 - While `WebClient.start()` is running, shutdown has a single owner: the adapter

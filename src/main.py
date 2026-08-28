@@ -21,6 +21,7 @@ from src.application.health.service import (
 from src.application.polling.max_runtime import MaxClientRuntimeRegistry
 from src.application.reconcile.service import RefreshReconcileService
 from src.application.routing.outbound import OutboundSyncService
+from src.application.topics.mute import TopicMuteService
 from src.infrastructure.max.adapter import max_client_factory
 from src.infrastructure.persistence.connection import Database, DatabaseSettings
 from src.infrastructure.persistence.init import init_schema
@@ -74,6 +75,14 @@ async def configure_bot_commands(bot: Bot) -> None:
             BotCommand(
                 command="resync",
                 description="Rebuild all topics from MAX chats",
+            ),
+            BotCommand(
+                command="mute",
+                description="Mute incoming MAX messages in this topic",
+            ),
+            BotCommand(
+                command="unmute",
+                description="Enable incoming MAX messages in this topic",
             ),
         ]
     )
@@ -158,6 +167,7 @@ async def main() -> None:
         max_client_factory=oneshot_max_factory,
         shared_runtime=shared_max_runtime,
     )
+    topic_mute_service = TopicMuteService(topic_repo)
 
     health_service = HealthCheckService(
         binding_repo=binding_repo,
@@ -206,7 +216,13 @@ async def main() -> None:
     # Register Telegram handlers
     dp = Dispatcher(bot=bot)
     register_handlers(
-        dp, allowlist_gate, auth_service, reconcile_service, outbound_service, tg_client
+        dp,
+        allowlist_gate,
+        auth_service,
+        reconcile_service,
+        outbound_service,
+        topic_mute_service,
+        tg_client,
     )
 
     # Start background poller

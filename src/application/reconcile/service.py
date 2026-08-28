@@ -124,6 +124,13 @@ class RefreshReconcileService:
                 len(existing_topics),
                 list(existing_by_chat.keys()),
             )
+            if target_max_chat_id is None:
+                await self._mute_departed_channels(
+                    telegram_user_id,
+                    max_chat_ids,
+                    existing_topics,
+                    max_client,
+                )
 
             # Determine topics to create
             for max_chat_id in max_chat_ids:
@@ -137,7 +144,16 @@ class RefreshReconcileService:
                     )
                     try:
                         await self._create_topic_with_backfill(
-                            telegram_user_id, max_chat_id, max_client
+                            telegram_user_id,
+                            max_chat_id,
+                            max_client,
+                            inbound_enabled=(
+                                existing_topic is None
+                                or existing_topic.inbound_enabled is not False
+                            ),
+                            inbound_since_ms=(
+                                existing_topic.inbound_since_ms if existing_topic else None
+                            ),
                         )
                     except AuthError:
                         raise
@@ -175,6 +191,8 @@ class RefreshReconcileService:
         telegram_user_id: int,
         max_chat_id: str,
         max_client: MaxClient,
+        inbound_enabled: bool = True,
+        inbound_since_ms: int | None = None,
     ) -> None:
         """Create a Telegram topic and backfill recent messages."""
         # Create topic in Telegram
@@ -200,6 +218,8 @@ class RefreshReconcileService:
             telegram_topic_id=topic_id,
             telegram_user_id=telegram_user_id,
             max_chat_id=max_chat_id,
+            inbound_enabled=inbound_enabled,
+            inbound_since_ms=inbound_since_ms,
         )
         await self._topic_repo.save(topic)
 
@@ -208,6 +228,15 @@ class RefreshReconcileService:
             AuditEventType.TOPIC_CREATED,
             f"Topic {topic_id} created for chat {max_chat_id}",
         )
+
+        if not inbound_enabled:
+            logger.info(
+                "reconcile backfill skipped muted topic telegram_user_id=%s max_chat_id=%s topic_id=%s",
+                telegram_user_id,
+                max_chat_id,
+                topic_id,
+            )
+            return
 
         # Telegram private topics can be briefly unavailable right after creation.
         await self._sleep(self._topic_ready_retry_delays[0])
@@ -244,6 +273,47 @@ class RefreshReconcileService:
                     updated_at=0,  # TODO
                 )
             )
+
+    async def _mute_departed_channels(
+        self,
+        telegram_user_id: int,
+        current_max_chat_ids: set[str],
+        existing_topics: list[TelegramTopic],
+        max_client: MaxClient,
+    ) -> None:
+        for topic in existing_topics:
+            if not topic.inbound_enabled:
+                continue
+            if topic.max_chat_id in current_max_chat_ids:
+                continue
+            try:
+                state = await max_client.get_chat_state(topic.max_chat_id)
+            except Exception:
+                logger.warning(
+                    "reconcile targeted chat state failed telegram_user_id=%s max_chat_id=%s",
+                    telegram_user_id,
+                    topic.max_chat_id,
+                    exc_info=True,
+                )
+                continue
+            if state is None:
+                continue
+            if str(state.get("chat_type") or "").upper() != "CHANNEL":
+                continue
+            if state.get("is_current_user_member") is not False:
+                continue
+            updated = await self._topic_repo.set_inbound_enabled(
+                telegram_user_id,
+                topic.telegram_topic_id,
+                False,
+            )
+            if updated:
+                logger.info(
+                    "reconcile auto-muted departed channel telegram_user_id=%s max_chat_id=%s topic_id=%s",
+                    telegram_user_id,
+                    topic.max_chat_id,
+                    topic.telegram_topic_id,
+                )
 
     def _resolve_target_chats(
         self, max_chats_raw: list[PersonalChatData], target_max_chat_id: str

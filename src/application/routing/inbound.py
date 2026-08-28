@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -21,8 +22,11 @@ from src.application.ports.repositories import (
     TelegramTopicRepository,
 )
 from src.application.ports.telegram_client import TelegramClient
+from src.domain.chats.topic import TelegramTopic
 from src.domain.messages.models import Direction, MessageLink
 from src.domain.sync.models import AuditEventType, SyncCursor
+
+logger = logging.getLogger(__name__)
 
 
 class MaxRuntimeDegradedError(RuntimeError):
@@ -178,6 +182,14 @@ class InboundSyncService:
 
         topics = await self._topic_repo.find_by_user(telegram_user_id)
         for topic in topics:
+            if topic.inbound_enabled is False:
+                logger.info(
+                    "inbound catch-up skipped muted topic telegram_user_id=%s max_chat_id=%s topic_id=%s",
+                    telegram_user_id,
+                    topic.max_chat_id,
+                    topic.telegram_topic_id,
+                )
+                continue
             await self._poll_chat_with_client(telegram_user_id, topic.max_chat_id, max_client)
 
     async def _recover_after_reconnect(self, telegram_user_id: int, max_client: MaxClient) -> bool:
@@ -236,6 +248,16 @@ class InboundSyncService:
             if self._reconcile_user is not None:
                 await self._reconcile_user(telegram_user_id)
             return
+        if topic.inbound_enabled is False:
+            logger.info(
+                "inbound live message skipped muted topic telegram_user_id=%s max_chat_id=%s topic_id=%s",
+                telegram_user_id,
+                max_chat_id,
+                topic.telegram_topic_id,
+            )
+            return
+        if self._is_before_inbound_window(topic, msg):
+            return
 
         delivered = await self._deliver_message(
             telegram_user_id,
@@ -263,6 +285,14 @@ class InboundSyncService:
         topic = await self._topic_repo.get_by_user_and_chat(telegram_user_id, max_chat_id)
         if topic is None:
             return False
+        if topic.inbound_enabled is False:
+            logger.info(
+                "inbound history skipped muted topic telegram_user_id=%s max_chat_id=%s topic_id=%s",
+                telegram_user_id,
+                max_chat_id,
+                topic.telegram_topic_id,
+            )
+            return False
 
         # Get sync cursor
         cursor = await self._cursor_repo.get(max_chat_id, telegram_user_id)
@@ -277,6 +307,9 @@ class InboundSyncService:
         latest_processed_id: str | None = None
         delivered_any = False
         for msg in messages:
+            if self._is_before_inbound_window(topic, msg):
+                latest_processed_id = str(msg["max_message_id"])
+                continue
             delivered = await self._deliver_message(
                 telegram_user_id,
                 max_chat_id,
@@ -297,6 +330,16 @@ class InboundSyncService:
                 )
             )
         return delivered_any
+
+    @staticmethod
+    def _is_before_inbound_window(topic: TelegramTopic, msg: dict[str, Any]) -> bool:
+        inbound_since_ms = topic.inbound_since_ms
+        if not isinstance(inbound_since_ms, int):
+            return False
+        message_time = msg.get("time")
+        if not isinstance(message_time, int):
+            return False
+        return message_time < inbound_since_ms
 
     async def _deliver_message(
         self,

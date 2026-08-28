@@ -12,6 +12,8 @@ class PersonalChatData(TypedDict):
     max_chat_id: str
     title: str
     participant_ids: NotRequired[list[str]]
+    chat_type: NotRequired[str]
+    is_current_user_member: NotRequired[bool]
 
 
 class MaxClient(ABC):
@@ -52,6 +54,11 @@ class MaxClient(ABC):
         Returns:
             list of dicts with 'max_chat_id' and 'title'.
         """
+        ...
+
+    @abstractmethod
+    async def get_chat_state(self, max_chat_id: str) -> PersonalChatData | None:
+        """Return fresh state for one MAX chat, including explicit membership when known."""
         ...
 
     @abstractmethod

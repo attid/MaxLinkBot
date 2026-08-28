@@ -18,6 +18,7 @@ from src.application.ports.repositories import (
 from src.application.ports.telegram_client import TelegramClient
 from src.application.reconcile.service import RefreshReconcileService
 from src.domain.chats.models import ChatType, MaxChat
+from src.domain.chats.topic import TelegramTopic
 
 
 class MockRepos:
@@ -40,6 +41,217 @@ class MockRepos:
 
 
 class TestReconcileService:
+    async def test_reconcile_auto_mutes_confirmed_unsubscribed_channel(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock()
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[
+                TelegramTopic(
+                    telegram_topic_id=619420,
+                    telegram_user_id=123,
+                    max_chat_id="-75032416815636",
+                )
+            ]
+        )
+        repos.topic_repo.set_inbound_enabled = AsyncMock(return_value=True)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(return_value=[])
+        max_client.get_chat_state = AsyncMock(
+            return_value={
+                "max_chat_id": "-75032416815636",
+                "title": "Новокриницкие от 0 до года",
+                "participant_ids": [],
+                "chat_type": "CHANNEL",
+                "is_current_user_member": False,
+            }
+        )
+        max_client.close = AsyncMock()
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            backfill_count=5,
+        )
+
+        await service.reconcile(telegram_user_id=123)
+
+        max_client.get_chat_state.assert_awaited_once_with("-75032416815636")
+        repos.topic_repo.set_inbound_enabled.assert_awaited_once_with(123, 619420, False)
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            {
+                "max_chat_id": "-1",
+                "title": "Subscribed",
+                "participant_ids": ["192875451"],
+                "chat_type": "CHANNEL",
+                "is_current_user_member": True,
+            },
+            None,
+        ],
+    )
+    async def test_reconcile_does_not_auto_mute_without_confirmed_departure(
+        self, state: object
+    ) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock()
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[
+                TelegramTopic(
+                    telegram_topic_id=10,
+                    telegram_user_id=123,
+                    max_chat_id="-1",
+                )
+            ]
+        )
+        repos.topic_repo.set_inbound_enabled = AsyncMock(return_value=True)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(return_value=[])
+        max_client.get_chat_state = AsyncMock(return_value=state)
+        max_client.close = AsyncMock()
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            backfill_count=5,
+        )
+
+        await service.reconcile(telegram_user_id=123)
+
+        repos.topic_repo.set_inbound_enabled.assert_not_awaited()
+
+    async def test_reconcile_keeps_state_when_targeted_lookup_fails(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock()
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[
+                TelegramTopic(
+                    telegram_topic_id=10,
+                    telegram_user_id=123,
+                    max_chat_id="-1",
+                )
+            ]
+        )
+        repos.topic_repo.set_inbound_enabled = AsyncMock(return_value=True)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(return_value=[])
+        max_client.get_chat_state = AsyncMock(side_effect=RuntimeError("lookup failed"))
+        max_client.close = AsyncMock()
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            backfill_count=5,
+        )
+
+        await service.reconcile(telegram_user_id=123)
+
+        repos.topic_repo.set_inbound_enabled.assert_not_awaited()
+
+    async def test_reconcile_does_not_recheck_already_muted_missing_channel(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock()
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[
+                TelegramTopic(
+                    telegram_topic_id=10,
+                    telegram_user_id=123,
+                    max_chat_id="-1",
+                    inbound_enabled=False,
+                )
+            ]
+        )
+        repos.topic_repo.set_inbound_enabled = AsyncMock(return_value=True)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(return_value=[])
+        max_client.get_chat_state = AsyncMock()
+        max_client.close = AsyncMock()
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            backfill_count=5,
+        )
+
+        await service.reconcile(telegram_user_id=123)
+
+        max_client.get_chat_state.assert_not_awaited()
+        repos.topic_repo.set_inbound_enabled.assert_not_awaited()
+
+    async def test_force_recreate_preserves_muted_state_and_skips_backfill(self) -> None:
+        repos = MockRepos()
+        repos.binding_repo.get = AsyncMock()
+        repos.topic_repo.find_by_user = AsyncMock(
+            return_value=[
+                TelegramTopic(
+                    telegram_topic_id=10,
+                    telegram_user_id=123,
+                    max_chat_id="chat1",
+                    inbound_enabled=False,
+                )
+            ]
+        )
+        repos.topic_repo.save = AsyncMock()
+        repos.max_chat_repo.get = AsyncMock(
+            return_value=MaxChat(
+                max_chat_id="chat1",
+                binding_telegram_user_id=123,
+                title="Muted chat",
+                chat_type=ChatType.PERSONAL,
+            )
+        )
+        repos.telegram.create_topic = AsyncMock(return_value=200)
+
+        max_client = MagicMock(start=AsyncMock())
+        max_client.list_personal_chats = AsyncMock(
+            return_value=[{"max_chat_id": "chat1", "title": "Muted chat"}]
+        )
+        max_client.get_messages = AsyncMock(return_value=[])
+        max_client.close = AsyncMock()
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: max_client,
+            backfill_count=5,
+        )
+
+        await service.reconcile(telegram_user_id=123, force_recreate=True)
+
+        assert repos.topic_repo.save.await_args is not None
+        saved_topic = repos.topic_repo.save.await_args.args[0]
+        assert saved_topic.inbound_enabled is False
+        max_client.get_messages.assert_not_awaited()
+
     async def test_reconcile_saves_max_chats(self) -> None:
         repos = MockRepos()
         repos.binding_repo.get = AsyncMock()

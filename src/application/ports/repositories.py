@@ -51,6 +51,14 @@ class TelegramTopicRepository(ABC):
     @abstractmethod
     async def save(self, topic: TelegramTopic) -> None: ...
 
+    @abstractmethod
+    async def set_inbound_enabled(
+        self,
+        telegram_user_id: int,
+        telegram_topic_id: int,
+        enabled: bool,
+    ) -> bool: ...
+
 
 class MessageLinkRepository(ABC):
     @abstractmethod

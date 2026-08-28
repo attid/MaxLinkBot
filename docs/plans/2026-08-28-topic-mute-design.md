@@ -31,6 +31,10 @@ the command use cases so Telegram handlers do not implement persistence rules.
 reconnect recovery, and hourly catch-up. Muted topics are skipped before calling
 `fetch_history()`.
 
+When `/unmute` enables delivery, the repository stores `inbound_since_ms`.
+History messages older than that boundary are skipped while advancing the sync
+cursor, so the muted backlog is not replayed and only new messages are delivered.
+
 The MAX port exposes a targeted chat-state lookup. `PymaxAdapter` derives the
 current account ID from `WebClient.me.contact.id` and reports channel membership
 from `participants`. Reconcile checks existing mappings that are absent from the

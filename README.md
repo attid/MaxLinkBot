@@ -69,6 +69,19 @@ SQLite data is persisted in the `maxlinkbot-data` Docker volume.
 
 See `docs/architecture.md` for full layer diagram and `docs/conventions.md` for code style.
 
+## Telegram Commands
+
+- `/start` — reconcile MAX chats and create missing Telegram topics.
+- `/resync [max_chat_id]` — rebuild all topics or one selected mapping.
+- `/mute` — when sent inside a topic, stop incoming `MAX -> Telegram` messages
+  for that topic while keeping outbound delivery enabled.
+- `/unmute` — when sent inside a topic, resume incoming messages; messages
+  accumulated while muted are skipped.
+
+Mute state is persisted in SQLite and survives container restarts and resyncs.
+Reconcile also mutes a channel when MAX explicitly confirms that the current
+account is no longer present in the channel participants.
+
 ## Key Services
 
 - `AllowlistGate` — discards all updates from non-allowed users

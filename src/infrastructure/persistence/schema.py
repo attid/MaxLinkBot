@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS telegram_topics (
                                REFERENCES user_bindings(telegram_user_id),
     max_chat_id            TEXT    NOT NULL
                                REFERENCES max_chats(max_chat_id),
+    inbound_enabled        INTEGER NOT NULL DEFAULT 1
+                               CHECK (inbound_enabled IN (0, 1)),
+    inbound_since_ms       INTEGER,
     UNIQUE (telegram_user_id, max_chat_id)
 );
 
