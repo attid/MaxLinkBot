@@ -184,6 +184,7 @@ async def test_get_messages_returns_max_message_id_key() -> None:
             "description": "",
             "media_url": None,
             "file_name": None,
+            "media": [],
         }
     ]
 
@@ -975,3 +976,131 @@ def test_migrate_legacy_session_db_does_not_overwrite_new_session(tmp_path: Path
         rows = conn.execute("SELECT token, device_id FROM sessions").fetchall()
 
     assert rows == [("new-token", "new-device")]
+
+
+@pytest.mark.asyncio
+async def test_get_messages_collects_all_photo_attaches_as_media_list() -> None:
+    raw_message = SimpleNamespace(
+        id=42,
+        text="album caption",
+        sender=7,
+        sender_id=None,
+        time=123,
+        type="USER",
+        description=None,
+        attaches=[
+            SimpleNamespace(
+                type=SimpleNamespace(name="PHOTO", value="PHOTO"),
+                base_url=f"https://example.com/image-{index}.jpg",
+            )
+            for index in range(1, 4)
+        ],
+        link=None,
+    )
+
+    user = SimpleNamespace(names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")])
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert messages[0]["type"] == "photo"
+    assert messages[0]["media_url"] == "https://example.com/image-1.jpg"
+    assert messages[0]["media"] == [
+        {"type": "photo", "url": "https://example.com/image-1.jpg", "file_name": None},
+        {"type": "photo", "url": "https://example.com/image-2.jpg", "file_name": None},
+        {"type": "photo", "url": "https://example.com/image-3.jpg", "file_name": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_messages_resolves_download_url_for_each_file_attach() -> None:
+    raw_message = SimpleNamespace(
+        id=42,
+        text="",
+        sender=7,
+        sender_id=None,
+        time=123,
+        type="USER",
+        description=None,
+        attaches=[
+            SimpleNamespace(
+                type=SimpleNamespace(name="FILE", value="FILE"),
+                file_id=1,
+                name="first.pdf",
+            ),
+            SimpleNamespace(
+                type=SimpleNamespace(name="FILE", value="FILE"),
+                file_id=2,
+                name="second.pdf",
+            ),
+        ],
+        link=None,
+    )
+
+    user = SimpleNamespace(names=[SimpleNamespace(name="Petya", first_name="Petya", last_name="")])
+
+    client = MagicMock()
+    client.fetch_history = AsyncMock(return_value=[raw_message])
+    client.get_cached_user = MagicMock(return_value=user)
+    client.fetch_users = AsyncMock(return_value=[])
+    client.get_file_by_id = AsyncMock(
+        side_effect=[
+            SimpleNamespace(url="https://example.com/first.pdf"),
+            SimpleNamespace(url="https://example.com/second.pdf"),
+        ]
+    )
+
+    adapter = PymaxAdapter(client)
+
+    messages = await adapter.get_messages("100", since_message_id=None, limit=5)
+
+    assert client.get_file_by_id.await_args_list == [
+        ((100, 42, 1),),
+        ((100, 42, 2),),
+    ]
+    assert messages[0]["media"] == [
+        {"type": "document", "url": "https://example.com/first.pdf", "file_name": "first.pdf"},
+        {"type": "document", "url": "https://example.com/second.pdf", "file_name": "second.pdf"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_buffered_live_message_keeps_all_photo_attaches() -> None:
+    raw_message = SimpleNamespace(
+        id=42,
+        chat_id=100,
+        text="",
+        sender="Petya",
+        sender_id=None,
+        time=123,
+        type="USER",
+        description=None,
+        attaches=[
+            SimpleNamespace(
+                type=SimpleNamespace(name="PHOTO", value="PHOTO"),
+                base_url=f"https://example.com/live-{index}.jpg",
+            )
+            for index in range(1, 3)
+        ],
+        link=None,
+    )
+
+    client = MagicMock()
+    client.get_cached_user = MagicMock(return_value=None)
+    client.fetch_users = AsyncMock(return_value=[])
+
+    adapter = PymaxAdapter(client)
+
+    await adapter._buffer_message(raw_message)  # type: ignore[reportPrivateUsage]
+    messages = await adapter.drain_buffered_messages()
+
+    assert messages[0]["media"] == [
+        {"type": "photo", "url": "https://example.com/live-1.jpg", "file_name": None},
+        {"type": "photo", "url": "https://example.com/live-2.jpg", "file_name": None},
+    ]

@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import BufferedInputFile
+from aiogram.types import (
+    BufferedInputFile,
+    InputMediaDocument,
+    InputMediaPhoto,
+    InputMediaVideo,
+    MediaUnion,
+)
 
-from src.application.ports.telegram_client import TelegramClient
+from src.application.ports.telegram_client import TelegramClient, TelegramMediaItem
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,7 @@ FIREFOX_ANDROID_HEADERS = {
 TELEGRAM_VIDEO_LIMIT_BYTES = 50 * 1024 * 1024
 TELEGRAM_MEDIA_CAPTION_LIMIT = 1024
 TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_MEDIA_GROUP_LIMIT = 10
 
 
 class AiogramTelegramAdapter(TelegramClient):
@@ -89,6 +97,47 @@ class AiogramTelegramAdapter(TelegramClient):
         )
         await self._send_caption_continuations(chat_id, topic_id, continuation_chunks)
         return msg.message_id  # type: ignore[return-value]
+
+    async def send_media_group_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        media: Sequence[TelegramMediaItem],
+        caption: str,
+    ) -> int:
+        """Send several MAX media elements as one Telegram album."""
+        logger.info(
+            "telegram send_media_group_to_topic chat_id=%s topic_id=%s items=%s caption_len=%s",
+            chat_id,
+            topic_id,
+            len(media),
+            len(caption),
+        )
+        media_caption, continuation_chunks = self._split_media_caption(caption)
+        inputs_by_chunk: list[list[MediaUnion]] = []
+        for chunk_index, chunk in enumerate(self._chunk_media(media)):
+            inputs: list[MediaUnion] = []
+            for item in chunk:
+                item_caption = media_caption if chunk_index == 0 and not inputs else ""
+                inputs.append(await self._build_input_media(item, item_caption))
+            inputs_by_chunk.append(inputs)
+
+        first_message_id: int | None = None
+        for inputs in inputs_by_chunk:
+            messages = await self._bot.send_media_group(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                media=inputs,
+            )
+            if first_message_id is None and messages:
+                first_message_id = messages[0].message_id
+        await self._send_caption_continuations(chat_id, topic_id, continuation_chunks)
+        if first_message_id is None:
+            raise TelegramBadRequest(
+                method=self._bot.send_media_group,  # type: ignore[reportArgumentType]
+                message="failed to get HTTP URL content",
+            )
+        return first_message_id
 
     async def send_audio_to_topic(
         self,
@@ -277,6 +326,73 @@ class AiogramTelegramAdapter(TelegramClient):
             for offset in range(0, len(remainder), TELEGRAM_TEXT_LIMIT)
         ]
         return media_caption, continuation_chunks
+
+    def _chunk_media(self, media: Sequence[TelegramMediaItem]) -> list[Sequence[TelegramMediaItem]]:
+        return [
+            media[offset : offset + TELEGRAM_MEDIA_GROUP_LIMIT]
+            for offset in range(0, len(media), TELEGRAM_MEDIA_GROUP_LIMIT)
+        ]
+
+    async def _build_input_media(
+        self,
+        item: TelegramMediaItem,
+        caption: str,
+    ) -> MediaUnion:
+        media_type = item["type"]
+        url = item["url"]
+        if media_type == "photo":
+            return InputMediaPhoto(media=url, caption=caption)
+        if media_type == "video":
+            video_bytes = await self._prepare_video_bytes(url)
+            return InputMediaVideo(
+                media=BufferedInputFile(video_bytes, filename=item.get("file_name", "video.mp4")),
+                caption=caption,
+                supports_streaming=True,
+            )
+        document_bytes = await self._prepare_document_bytes(url)
+        return InputMediaDocument(
+            media=BufferedInputFile(document_bytes, filename=item.get("file_name", "file.bin")),
+            caption=caption,
+        )
+
+    async def _prepare_video_bytes(self, url: str) -> bytes:
+        try:
+            remote_size = await self._probe_remote_file_size(url)
+            if remote_size is not None and remote_size > TELEGRAM_VIDEO_LIMIT_BYTES:
+                raise ValueError(
+                    f"video size {remote_size} exceeds Telegram limit {TELEGRAM_VIDEO_LIMIT_BYTES}"
+                )
+            video_bytes = await self._download_file_bytes(url)
+            if len(video_bytes) > TELEGRAM_VIDEO_LIMIT_BYTES:
+                raise ValueError(
+                    f"video size {len(video_bytes)} exceeds Telegram limit "
+                    f"{TELEGRAM_VIDEO_LIMIT_BYTES}"
+                )
+        except Exception as exc:
+            logger.warning(
+                "telegram media group video preparation failed url_len=%s",
+                len(url),
+                exc_info=True,
+            )
+            raise TelegramBadRequest(
+                method=self._bot.send_media_group,  # type: ignore[reportArgumentType]
+                message="failed to get HTTP URL content",
+            ) from exc
+        return video_bytes
+
+    async def _prepare_document_bytes(self, url: str) -> bytes:
+        try:
+            return await self._download_file_bytes(url)
+        except Exception as exc:
+            logger.warning(
+                "telegram media group document preparation failed url_len=%s",
+                len(url),
+                exc_info=True,
+            )
+            raise TelegramBadRequest(
+                method=self._bot.send_media_group,  # type: ignore[reportArgumentType]
+                message="failed to get HTTP URL content",
+            ) from exc
 
     async def _send_caption_continuations(
         self,

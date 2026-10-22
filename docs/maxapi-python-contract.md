@@ -92,6 +92,19 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   (`type=USER`, no text/attaches usable for rendering). Adapter code preserves
   top-level sender/time/id metadata, but reads content/media metadata from either
   object-shaped or dict-shaped `link.message`.
+- A MAX album is one message with several `attaches` entries, not several
+  messages. `PymaxAdapter` therefore exposes every renderable attachment through
+  the `media: list[{type, url, file_name}]` payload key for both `get_messages()`
+  and `drain_buffered_messages()`; the legacy `media_url` / `file_name` / `type`
+  keys stay as a view of the first element.
+- `MAX -> Telegram` delivery of a message with two or more photo/video elements
+  uses the Bot API media group path (`sendMediaGroup`, max 10 items per group).
+  Documents are only grouped with documents; mixed photo+document or audio
+  payloads keep the single-media path. Media group items are uploaded per item
+  (video/document as `BufferedInputFile`) because Telegram cannot fetch MAX
+  signed URLs for those types; photo items may stay URL-based.
+- Telegram media group captions follow the same rule as single media: first 1024
+  characters on the first element, the remainder as follow-up text messages.
 
 ## Known Unknowns
 

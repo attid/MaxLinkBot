@@ -68,6 +68,10 @@ src/
   используется из `/start`; проверяет сессию, чаты, topics, backfill.
 - `InboundSyncService`:
   переносит MAX -> Telegram.
+  Сообщение с несколькими вложениями (альбом MAX) уходит в Telegram одним
+  media group через `TelegramClient.send_media_group_to_topic`; выбор элементов
+  сосредоточен в `application/routing/media.py` и переиспользуется также
+  backfill-путём `RefreshReconcileService`.
 - `OutboundSyncService`:
   переносит Telegram topic -> MAX.
 - `SessionHealthService`:

@@ -15,7 +15,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -116,6 +116,17 @@ class PymaxMessage:
     description: str
     media_url: str | None = None
     file_name: str | None = None
+    media: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+
+
+@dataclass
+class _MediaCandidate:
+    """One renderable MAX attachment before dynamic URL resolution."""
+
+    kind: str
+    url: str | None
+    file_name: str | None
+    attach: Any = None
 
 
 class PymaxAdapter(MaxClientPort):
@@ -235,19 +246,9 @@ class PymaxAdapter(MaxClientPort):
                 continue
             content = self._select_content_source_message(m)
             sender_id = self._extract_sender_id(m)
-            media_type, media_url, file_name = self._extract_media_metadata(content)
-            if media_type == "document" and media_url is None:
-                media_url = await self._resolve_document_url(
-                    content,
-                    chat_id=chat_id,
-                    message_id=m.id,
-                )
-            if media_type == "video" and media_url is None:
-                media_url = await self._resolve_video_url(
-                    content,
-                    chat_id=chat_id,
-                    message_id=m.id,
-                )
+            candidates = self._collect_media_candidates(content)
+            await self._resolve_media_urls(candidates, chat_id=chat_id, message_id=m.id)
+            media_type, media_url, file_name, media = self._media_payload(candidates)
             raw_description = self._field(content, "description")
             description = raw_description.strip() if isinstance(raw_description, str) else ""
             text = self._field(content, "text") or ""
@@ -267,6 +268,7 @@ class PymaxAdapter(MaxClientPort):
                     "description": description,
                     "media_url": media_url,
                     "file_name": file_name,
+                    "media": media,
                 }
             )
         logger.info(
@@ -364,46 +366,98 @@ class PymaxAdapter(MaxClientPort):
         attaches = cast(list[Any] | tuple[Any, ...], raw_attaches)
         return bool(attaches)
 
-    def _extract_media_metadata(self, message: Any) -> tuple[str | None, str | None, str | None]:
-        raw_attaches = self._field(message, "attaches")
-        if isinstance(raw_attaches, (list, tuple)):
-            attaches = list(cast(list[Any] | tuple[Any, ...], raw_attaches))
-        else:
-            attaches = []
-        for attach in attaches:
-            attach_type = self._field(attach, "type", "_type")
-            type_name = ""
-            if isinstance(attach_type, str):
-                type_name = attach_type.strip().lower()
-            else:
-                name = getattr(attach_type, "name", None)
-                value = getattr(attach_type, "value", None)
-                if isinstance(name, str):
-                    type_name = name.strip().lower()
-                elif isinstance(value, str):
-                    type_name = value.strip().lower()
+    def _extract_media_metadata(
+        self, message: Any
+    ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
+        candidates = self._collect_media_candidates(message)
+        return self._media_payload(candidates)
 
+    def _collect_media_candidates(self, message: Any) -> list[_MediaCandidate]:
+        """Collect every renderable attachment of one MAX message.
+
+        MAX delivers an album as a single message with several attachments, so
+        the adapter must keep all of them instead of the first match.
+        """
+        raw_attaches = self._field(message, "attaches")
+        if not isinstance(raw_attaches, (list, tuple)):
+            return []
+
+        candidates: list[_MediaCandidate] = []
+        for attach in cast(list[Any] | tuple[Any, ...], raw_attaches):
+            type_name = self._attachment_type_name(self._field(attach, "type", "_type"))
             if type_name == "photo":
-                base_url = self._field(attach, "base_url", "baseUrl")
-                if isinstance(base_url, str) and base_url.strip():
-                    return "photo", base_url.strip(), None
-            if type_name in {"audio", "voice"}:
-                url = self._field(attach, "url")
-                if isinstance(url, str) and url.strip():
-                    return "audio", url.strip(), self._extract_attach_filename(attach)
-            if type_name == "video":
-                url = self._field(attach, "url")
-                if isinstance(url, str) and url.strip():
-                    return "video", url.strip(), self._extract_attach_filename(attach)
-                return "video", None, "video.mp4"
-            if type_name in {"file", "document"}:
-                url = self._field(attach, "url")
+                url = self._extract_url(self._field(attach, "base_url", "baseUrl"))
+                if url:
+                    candidates.append(_MediaCandidate("photo", url, None, attach))
+            elif type_name in {"audio", "voice"}:
+                url = self._extract_url(self._field(attach, "url"))
+                if url:
+                    candidates.append(
+                        _MediaCandidate("audio", url, self._extract_attach_filename(attach), attach)
+                    )
+            elif type_name == "video":
+                url = self._extract_url(self._field(attach, "url"))
+                candidates.append(
+                    _MediaCandidate(
+                        "video",
+                        url,
+                        self._extract_attach_filename(attach) or "video.mp4",
+                        attach,
+                    )
+                )
+            elif type_name in {"file", "document"}:
+                url = self._extract_url(self._field(attach, "url"))
                 file_name = self._extract_attach_filename(attach)
-                if isinstance(url, str) and url.strip():
-                    return "document", url.strip(), file_name
-                if file_name:
-                    return "document", None, file_name
-        return None, None, None
+                if url or file_name:
+                    candidates.append(_MediaCandidate("document", url, file_name, attach))
+        return candidates
+
+    async def _resolve_media_urls(
+        self,
+        candidates: list[_MediaCandidate],
+        chat_id: int,
+        message_id: int | str,
+    ) -> None:
+        """Fill in download URLs that MAX only exposes through per-attach lookups."""
+        for candidate in candidates:
+            if candidate.url is not None or candidate.kind not in {"document", "video"}:
+                continue
+            candidate.url = await self._fetch_attach_url(
+                candidate.kind,
+                candidate.attach,
+                chat_id,
+                message_id,
+            )
+
+    def _media_payload(
+        self, candidates: list[_MediaCandidate]
+    ) -> tuple[str | None, str | None, str | None, list[dict[str, Any]]]:
+        """Return legacy single-media fields plus the full media list of the message."""
+        if not candidates:
+            return None, None, None, []
+        primary = candidates[0]
+        media: list[dict[str, Any]] = [
+            {"type": candidate.kind, "url": candidate.url, "file_name": candidate.file_name}
+            for candidate in candidates
+            if candidate.url
+        ]
+        return primary.kind, primary.url, primary.file_name, media
+
+    def _attachment_type_name(self, attach_type: Any) -> str:
+        if isinstance(attach_type, str):
+            return attach_type.strip().lower()
+        name = getattr(attach_type, "name", None)
+        if isinstance(name, str):
+            return name.strip().lower()
+        value = getattr(attach_type, "value", None)
+        if isinstance(value, str):
+            return value.strip().lower()
+        return ""
+
+    def _extract_url(self, value: Any) -> str | None:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
 
     def _extract_attach_filename(self, attach: Any) -> str | None:
         for attr_name in ("file_name", "fileName", "filename", "name", "title"):
@@ -412,24 +466,15 @@ class PymaxAdapter(MaxClientPort):
                 return value.strip()
         return None
 
-    async def _resolve_document_url(
+    async def _fetch_attach_url(
         self,
-        message: Any,
+        kind: str,
+        attach: Any,
         chat_id: int,
         message_id: int | str,
     ) -> str | None:
-        raw_attaches = self._field(message, "attaches")
-        if not isinstance(raw_attaches, (list, tuple)):
-            return None
-
-        for attach in cast(list[Any] | tuple[Any, ...], raw_attaches):
-            attach_type = self._field(attach, "type", "_type")
-            type_name = getattr(attach_type, "value", attach_type)
-            if not isinstance(type_name, str) or type_name.strip().lower() not in {
-                "file",
-                "document",
-            }:
-                continue
+        """Resolve a download URL for the attachment that requested it."""
+        if kind == "document":
             file_id = self._field(attach, "file_id", "fileId")
             if not isinstance(file_id, int):
                 return None
@@ -439,65 +484,44 @@ class PymaxAdapter(MaxClientPort):
                     message_id,
                     file_id,
                 )
-                url = getattr(file_request, "url", None)
-                if isinstance(url, str) and url.strip():
-                    return url.strip()
-            return None
-        return None
-
-    async def _resolve_video_url(
-        self,
-        message: Any,
-        chat_id: int,
-        message_id: int | str,
-    ) -> str | None:
-        raw_attaches = self._field(message, "attaches")
-        if not isinstance(raw_attaches, (list, tuple)):
+                return self._extract_url(getattr(file_request, "url", None))
             return None
 
-        for attach in cast(list[Any] | tuple[Any, ...], raw_attaches):
-            attach_type = self._field(attach, "type", "_type")
-            type_name = getattr(attach_type, "value", attach_type)
-            if not isinstance(type_name, str) or type_name.strip().lower() != "video":
-                continue
-            video_id = self._field(attach, "video_id", "videoId")
-            if not isinstance(video_id, int):
-                return None
-            try:
-                video_request = await self._client.get_video_by_id(
-                    chat_id,
-                    message_id,
-                    video_id,
-                )
-                url = getattr(video_request, "url", None)
-                if isinstance(url, str) and url.strip():
-                    return url.strip()
-            except ValidationError as exc:
-                fallback_url = self._extract_video_url_from_validation_error(exc)
-                if fallback_url:
-                    logger.warning(
-                        "max video URL compatibility fallback chat_id=%s message_id=%s video_id=%s",
-                        chat_id,
-                        message_id,
-                        video_id,
-                    )
-                    return fallback_url
-                logger.warning(
-                    "max video URL validation failed chat_id=%s message_id=%s video_id=%s error_types=%s",
-                    chat_id,
-                    message_id,
-                    video_id,
-                    [error.get("type") for error in exc.errors()],
-                )
-            except Exception as exc:
-                logger.warning(
-                    "max video URL lookup failed chat_id=%s message_id=%s video_id=%s error_type=%s",
-                    chat_id,
-                    message_id,
-                    video_id,
-                    type(exc).__name__,
-                )
+        video_id = self._field(attach, "video_id", "videoId")
+        if not isinstance(video_id, int):
             return None
+        try:
+            video_request = await self._client.get_video_by_id(
+                chat_id,
+                message_id,
+                video_id,
+            )
+            return self._extract_url(getattr(video_request, "url", None))
+        except ValidationError as exc:
+            fallback_url = self._extract_video_url_from_validation_error(exc)
+            if fallback_url:
+                logger.warning(
+                    "max video URL compatibility fallback chat_id=%s message_id=%s video_id=%s",
+                    chat_id,
+                    message_id,
+                    video_id,
+                )
+                return fallback_url
+            logger.warning(
+                "max video URL validation failed chat_id=%s message_id=%s video_id=%s error_types=%s",
+                chat_id,
+                message_id,
+                video_id,
+                [error.get("type") for error in exc.errors()],
+            )
+        except Exception as exc:
+            logger.warning(
+                "max video URL lookup failed chat_id=%s message_id=%s video_id=%s error_type=%s",
+                chat_id,
+                message_id,
+                video_id,
+                type(exc).__name__,
+            )
         return None
 
     def _extract_video_url_from_validation_error(self, exc: ValidationError) -> str | None:
@@ -670,6 +694,7 @@ class PymaxAdapter(MaxClientPort):
                     "description": message.description,
                     "media_url": message.media_url,
                     "file_name": message.file_name,
+                    "media": message.media,
                 }
             )
 
@@ -829,19 +854,11 @@ class PymaxAdapter(MaxClientPort):
         raw_type = self._field(content, "type")
         text = self._field(content, "text") or ""
         normalized_type = self._normalize_live_message_type(raw_type, text)
-        media_type, media_url, file_name = self._extract_media_metadata(content)
-        if media_type == "document" and media_url is None:
-            media_url = await self._resolve_document_url(
-                content,
-                chat_id=int(msg.chat_id),
-                message_id=msg.id,
-            )
-        if media_type == "video" and media_url is None:
-            media_url = await self._resolve_video_url(
-                content,
-                chat_id=int(msg.chat_id),
-                message_id=msg.id,
-            )
+        candidates = self._collect_media_candidates(content)
+        raw_chat_id = getattr(msg, "chat_id", None)
+        if isinstance(raw_chat_id, int):
+            await self._resolve_media_urls(candidates, chat_id=raw_chat_id, message_id=msg.id)
+        media_type, media_url, file_name, media = self._media_payload(candidates)
         async with self._lock:
             self._buffer.append(
                 PymaxMessage(
@@ -855,16 +872,25 @@ class PymaxAdapter(MaxClientPort):
                     description=str(self._field(content, "description") or ""),
                     media_url=media_url,
                     file_name=file_name,
+                    media=media,
                 )
             )
         logger.info(
-            "max buffered live message chat_id=%s message_id=%s raw_type=%r normalized_type=%s has_text=%s",
+            "max buffered live message chat_id=%s message_id=%s raw_type=%r normalized_type=%s has_text=%s attach_count=%s media_count=%s",
             getattr(msg, "chat_id", None),
             getattr(msg, "id", None),
             raw_type,
             normalized_type,
             bool(text),
+            len(self._raw_attaches(content)),
+            len(media),
         )
+
+    def _raw_attaches(self, message: Any) -> list[Any]:
+        raw_attaches = self._field(message, "attaches")
+        if isinstance(raw_attaches, (list, tuple)):
+            return list(cast(list[Any] | tuple[Any, ...], raw_attaches))
+        return []
 
     def _normalize_live_message_type(self, raw_type: Any, text: Any) -> str:
         if isinstance(raw_type, str):

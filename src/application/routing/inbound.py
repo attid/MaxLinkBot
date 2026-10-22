@@ -21,7 +21,8 @@ from src.application.ports.repositories import (
     SyncCursorRepository,
     TelegramTopicRepository,
 )
-from src.application.ports.telegram_client import TelegramClient
+from src.application.ports.telegram_client import TelegramClient, TelegramMediaItem
+from src.application.routing.media import collect_media_group_items
 from src.domain.chats.topic import TelegramTopic
 from src.domain.messages.models import Direction, MessageLink
 from src.domain.sync.models import AuditEventType, SyncCursor
@@ -411,6 +412,34 @@ class InboundSyncService:
         prefix = self._render_prefix(msg)
         media_caption = self._compose_media_caption(prefix, msg.get("text"))
 
+        media_group_items = collect_media_group_items(msg)
+        if media_group_items:
+            try:
+                return await self._telegram.send_media_group_to_topic(
+                    chat_id=telegram_user_id,
+                    topic_id=topic_id,
+                    media=media_group_items,
+                    caption=media_caption,
+                )
+            except TelegramBadRequest as exc:
+                if not self._should_fallback_from_media_url(exc):
+                    raise
+                logger.warning(
+                    "telegram media group rejected, falling back to per-item delivery "
+                    "telegram_user_id=%s topic_id=%s max_message_id=%s items=%s error=%s",
+                    telegram_user_id,
+                    topic_id,
+                    msg.get("max_message_id"),
+                    len(media_group_items),
+                    exc,
+                )
+                return await self._send_media_items_separately(
+                    telegram_user_id,
+                    topic_id,
+                    msg,
+                    media_group_items,
+                )
+
         if msg_type in {"photo", "image"} and media_url:
             try:
                 return await self._telegram.send_photo_to_topic(
@@ -491,6 +520,37 @@ class InboundSyncService:
             topic_id=topic_id,
             text=text,
         )
+
+    async def _send_media_items_separately(
+        self,
+        telegram_user_id: int,
+        topic_id: int,
+        msg: dict[str, Any],
+        media_items: list[TelegramMediaItem],
+    ) -> int:
+        """Deliver album elements one by one when Telegram refuses the media group."""
+        first_message_id: int | None = None
+        for index, item in enumerate(media_items):
+            single_message = {
+                key: value
+                for key, value in msg.items()
+                if key not in {"media", "media_url", "file_name"}
+            }
+            single_message["type"] = item["type"]
+            single_message["media_url"] = item["url"]
+            single_message["file_name"] = item.get("file_name")
+            if index:
+                single_message["text"] = ""
+            message_id = await self._send_message_to_telegram(
+                telegram_user_id=telegram_user_id,
+                topic_id=topic_id,
+                msg=single_message,
+            )
+            if first_message_id is None:
+                first_message_id = message_id
+        if first_message_id is None:
+            raise RuntimeError("media group fallback delivered no messages")
+        return first_message_id
 
     def _render_message(self, msg: dict[str, Any]) -> str:
         """Render a MAX message to Telegram text. Fallback for unsupported types."""

@@ -1138,3 +1138,93 @@ class TestReconcileService:
         assert cursor_call is not None
         saved_cursor = cursor_call.args[0]
         assert saved_cursor.last_max_message_id == "42"
+
+    async def test_send_backfill_message_sends_album_as_media_group(self) -> None:
+        repos = MockRepos()
+        repos.telegram.send_media_group_to_topic = AsyncMock(return_value=500)
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+        )
+
+        await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "0",
+                "type": "photo",
+                "media_url": "https://example.com/1.jpg",
+                "media": [
+                    {"type": "photo", "url": "https://example.com/1.jpg", "file_name": None},
+                    {"type": "photo", "url": "https://example.com/2.jpg", "file_name": None},
+                ],
+                "text": "Альбом из истории",
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        repos.telegram.send_media_group_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=200,
+            media=[
+                {"type": "photo", "url": "https://example.com/1.jpg", "file_name": "photo.jpg"},
+                {"type": "photo", "url": "https://example.com/2.jpg", "file_name": "photo.jpg"},
+            ],
+            caption="[Igor 192875451 22.03.26 22:30]\nАльбом из истории",
+        )
+        repos.telegram.send_photo_to_topic.assert_not_called()
+
+    async def test_send_backfill_message_falls_back_to_separate_media_group_items(
+        self,
+    ) -> None:
+        repos = MockRepos()
+        repos.telegram.send_media_group_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=MagicMock(),
+                message="failed to get HTTP URL content",
+            )
+        )
+        repos.telegram.send_photo_to_topic = AsyncMock(side_effect=[500, 501])
+
+        service = RefreshReconcileService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _uid, _phone: MagicMock(),
+            backfill_count=5,
+        )
+
+        await service._send_backfill_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            topic_id=200,
+            msg={
+                "chat_id": "0",
+                "type": "photo",
+                "media_url": "https://example.com/1.jpg",
+                "media": [
+                    {"type": "photo", "url": "https://example.com/1.jpg", "file_name": None},
+                    {"type": "photo", "url": "https://example.com/2.jpg", "file_name": None},
+                ],
+                "sender_name": "Igor",
+                "sender_id": 192875451,
+                "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+            },
+        )
+
+        calls = repos.telegram.send_photo_to_topic.await_args_list
+        assert [call.kwargs["photo_url"] for call in calls] == [
+            "https://example.com/1.jpg",
+            "https://example.com/2.jpg",
+        ]

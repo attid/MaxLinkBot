@@ -1,6 +1,24 @@
 """Port for the Telegram client (aiogram)."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from typing import NotRequired, TypedDict
+
+
+class TelegramMediaItem(TypedDict):
+    """One media element of a Telegram media group.
+
+    Attributes:
+        type: Telegram media kind: ``photo``, ``video`` or ``document``.
+        url: MAX download URL of the media element.
+        file_name: File name used for document/video uploads.
+    """
+
+    type: str
+    url: str
+    file_name: NotRequired[str]
 
 
 class TelegramClient(ABC):
@@ -33,6 +51,21 @@ class TelegramClient(ABC):
         caption: str,
     ) -> int:
         """Send a photo to a specific topic."""
+        ...
+
+    @abstractmethod
+    async def send_media_group_to_topic(
+        self,
+        chat_id: int,
+        topic_id: int,
+        media: Sequence[TelegramMediaItem],
+        caption: str,
+    ) -> int:
+        """Send several MAX media elements as one Telegram album.
+
+        Returns:
+            The Telegram message ID of the first element of the album.
+        """
         ...
 
     @abstractmethod

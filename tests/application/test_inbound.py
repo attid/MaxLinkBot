@@ -1473,3 +1473,151 @@ class TestInboundSyncService:
             }
         )
         assert result == "[Аттракционы Ривьера Сочи UnknownID 22.03.26 21:28]\nЧерновой план"
+
+
+class TestInboundAlbumDelivery:
+    """MAX albom with several attachments is delivered as one Telegram media group."""
+
+    @staticmethod
+    def _service(repos: MockRepos) -> InboundSyncService:
+        return InboundSyncService(
+            binding_repo=repos.binding_repo,
+            max_chat_repo=repos.max_chat_repo,
+            topic_repo=repos.topic_repo,
+            message_link_repo=repos.message_link_repo,
+            cursor_repo=repos.cursor_repo,
+            audit_repo=repos.audit_repo,
+            telegram_client=repos.telegram,
+            max_client_factory=lambda _u, _p: MagicMock(),
+        )
+
+    @staticmethod
+    def _album_message() -> dict[str, object]:
+        return {
+            "max_message_id": "1",
+            "chat_id": "0",
+            "type": "photo",
+            "media_url": "https://example.com/1.jpg",
+            "file_name": None,
+            "media": [
+                {"type": "photo", "url": "https://example.com/1.jpg", "file_name": None},
+                {"type": "photo", "url": "https://example.com/2.jpg", "file_name": None},
+                {"type": "photo", "url": "https://example.com/3.jpg", "file_name": None},
+            ],
+            "text": "Альбом",
+            "sender_name": "Igor",
+            "sender_id": 192875451,
+            "time": int(datetime(2026, 3, 22, 22, 30, tzinfo=UTC).timestamp() * 1000),
+        }
+
+    async def test_deliver_message_sends_album_as_media_group(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_media_group_to_topic = AsyncMock(return_value=101)
+
+        service = self._service(repos)
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg=dict(self._album_message()),
+        )
+
+        assert delivered is True
+        repos.telegram.send_media_group_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            media=[
+                {"type": "photo", "url": "https://example.com/1.jpg", "file_name": "photo.jpg"},
+                {"type": "photo", "url": "https://example.com/2.jpg", "file_name": "photo.jpg"},
+                {"type": "photo", "url": "https://example.com/3.jpg", "file_name": "photo.jpg"},
+            ],
+            caption="[Igor 192875451 22.03.26 22:30]\nАльбом",
+        )
+        repos.telegram.send_photo_to_topic.assert_not_called()
+
+    async def test_deliver_message_keeps_single_media_path_for_one_element(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_photo_to_topic = AsyncMock(return_value=101)
+
+        msg = dict(self._album_message())
+        msg["media"] = [{"type": "photo", "url": "https://example.com/1.jpg", "file_name": None}]
+
+        service = self._service(repos)
+
+        await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg=msg,
+        )
+
+        repos.telegram.send_media_group_to_topic.assert_not_called()
+        repos.telegram.send_photo_to_topic.assert_awaited_once_with(
+            chat_id=123,
+            topic_id=50,
+            photo_url="https://example.com/1.jpg",
+            caption="[Igor 192875451 22.03.26 22:30]\nАльбом",
+        )
+
+    async def test_deliver_message_falls_back_to_separate_media_when_group_is_rejected(
+        self,
+    ) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_media_group_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(
+                method=MagicMock(),
+                message="failed to get HTTP URL content",
+            )
+        )
+        repos.telegram.send_photo_to_topic = AsyncMock(side_effect=[101, 102, 103])
+
+        service = self._service(repos)
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg=dict(self._album_message()),
+        )
+
+        assert delivered is True
+        calls = repos.telegram.send_photo_to_topic.await_args_list
+        assert [call.kwargs["photo_url"] for call in calls] == [
+            "https://example.com/1.jpg",
+            "https://example.com/2.jpg",
+            "https://example.com/3.jpg",
+        ]
+        assert [call.kwargs["caption"] for call in calls] == [
+            "[Igor 192875451 22.03.26 22:30]\nАльбом",
+            "[Igor 192875451 22.03.26 22:30]",
+            "[Igor 192875451 22.03.26 22:30]",
+        ]
+
+    async def test_deliver_message_reraises_non_media_group_errors(self) -> None:
+        repos = MockRepos()
+        repos.message_link_repo.exists_max_message = AsyncMock(return_value=False)
+        repos.message_link_repo.save = AsyncMock()
+        repos.telegram.send_media_group_to_topic = AsyncMock(
+            side_effect=TelegramBadRequest(method=MagicMock(), message="chat not found")
+        )
+        repos.audit_repo.log = AsyncMock()
+
+        service = self._service(repos)
+
+        delivered = await service._deliver_message(  # type: ignore[reportPrivateUsage]
+            telegram_user_id=123,
+            max_chat_id="0",
+            topic_id=50,
+            msg=dict(self._album_message()),
+        )
+
+        assert delivered is False
+        repos.telegram.send_photo_to_topic.assert_not_called()
+        repos.audit_repo.log.assert_awaited_once()
