@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import ValidationError
 from pymax import File, Photo
 from pymax.exceptions import ApiError
 from pymax.types.domain.attachments.video import VideoRequest
@@ -446,8 +445,21 @@ async def test_get_messages_resolves_direct_video_attach_url() -> None:
     client.get_video_by_id.assert_awaited_once_with(0, 42, 777)
 
 
+def test_pymax_video_request_selects_highest_dynamic_mp4_url() -> None:
+    """PyMax 2.4.1 parses the dynamic MP4 payload that 2.3.1 rejected."""
+
+    request = VideoRequest.model_validate(
+        {
+            "MP4_360": "https://example.com/video-360.mp4",
+            "MP4_480": "https://example.com/video-480.mp4",
+        }
+    )
+
+    assert request.url == "https://example.com/video-480.mp4"
+
+
 @pytest.mark.asyncio
-async def test_get_messages_recovers_dynamic_video_url_from_pymax_validation_error() -> None:
+async def test_get_messages_resolves_dynamic_video_url_through_pymax_model() -> None:
     raw_message = SimpleNamespace(
         id=117110862086738596,
         text="",
@@ -466,19 +478,19 @@ async def test_get_messages_recovers_dynamic_video_url_from_pymax_validation_err
             )
         ],
     )
-    with pytest.raises(ValidationError) as exc_info:
-        VideoRequest.model_validate(
-            {
-                "MP4_360": "https://example.com/video-360.mp4",
-                "MP4_480": "https://example.com/video-480.mp4",
-            }
-        )
 
     client = MagicMock()
     client.fetch_history = AsyncMock(return_value=[raw_message])
     client.get_cached_user = MagicMock(return_value=None)
     client.fetch_users = AsyncMock(return_value=[])
-    client.get_video_by_id = AsyncMock(side_effect=exc_info.value)
+    client.get_video_by_id = AsyncMock(
+        return_value=VideoRequest.model_validate(
+            {
+                "MP4_360": "https://example.com/video-360.mp4",
+                "MP4_480": "https://example.com/video-480.mp4",
+            }
+        )
+    )
     adapter = PymaxAdapter(client)
 
     messages = await adapter.get_messages("187861739", since_message_id=None, limit=5)
@@ -1104,3 +1116,29 @@ async def test_buffered_live_message_keeps_all_photo_attaches() -> None:
         {"type": "photo", "url": "https://example.com/live-1.jpg", "file_name": None},
         {"type": "photo", "url": "https://example.com/live-2.jpg", "file_name": None},
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_chat_state_survives_pymax_runtime_not_started() -> None:
+    """PyMax 2.4 raises RuntimeError for ``me``/``chats`` before start()."""
+    chat = SimpleNamespace(
+        id=-75032416815636,
+        title="Канал",
+        type="CHANNEL",
+        owner=0,
+        participants={192875451: 0},
+    )
+
+    unstarted_client = MagicMock()
+    type(unstarted_client).me = property(
+        lambda _self: (_ for _ in ()).throw(RuntimeError("Client runtime is not initialized"))
+    )
+    type(unstarted_client).chats = property(
+        lambda _self: (_ for _ in ()).throw(RuntimeError("Client runtime is not initialized"))
+    )
+    unstarted_client.get_chat = AsyncMock(return_value=chat)
+
+    state = await PymaxAdapter(unstarted_client).get_chat_state("-75032416815636")
+
+    assert state is not None
+    assert "is_current_user_member" not in state

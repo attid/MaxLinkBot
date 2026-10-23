@@ -524,7 +524,7 @@ wheels = [
 
 [[package]]
 name = "maxapi-python"
-version = "2.3.1"
+version = "2.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -537,9 +537,9 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/37/49d261644c0df2a51cdefdf8d2cb95ff8881ada789152e32d959d2dda57a/maxapi_python-2.3.1.tar.gz", hash = "sha256:988d2bde8bb9c549630ab225b3aebda36ebb35850d33e0013bc64b96887cd7e6", size = 296272, upload-time = "2026-06-19T15:50:07.254Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/a6/77a04168c570bd44f0066760649317482148b3c9849ab266661454b38f52/maxapi_python-2.4.1.tar.gz", hash = "sha256:c68a642845b6794170c84251058b218773f88416b04f689cce837f49b59bf31a", size = 338773, upload-time = "2026-08-24T19:51:01.011Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/95/8ea5c703ddffcd907278f1ae04066e1a718bf12034f35fc8c47bb981f0ba/maxapi_python-2.3.1-py3-none-any.whl", hash = "sha256:1e9980eb9e5b037bd5e8599f53f8438117b4e67a4ea5a937d709b5bcacfd5bd7", size = 134629, upload-time = "2026-06-19T15:50:05.985Z" },
+    { url = "https://files.pythonhosted.org/packages/42/f6/78e8c997cbdd6ff58096305472e308167e91ab9f5f901705a58a02bad783/maxapi_python-2.4.1-py3-none-any.whl", hash = "sha256:49c996cebebdcd490b8fc1424c84faad3c33d0b75eff4bb86cf1de9d968d76ea", size = 163480, upload-time = "2026-08-24T19:50:59.602Z" },
 ]
 
 [[package]]
@@ -570,7 +570,7 @@ dev = [
 requires-dist = [
     { name = "aiogram", specifier = "==3.31.0" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "maxapi-python", specifier = "==2.3.1" },
+    { name = "maxapi-python", specifier = "==2.4.1" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },

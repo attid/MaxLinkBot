@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import qrcode
-from pydantic import ValidationError
 from pymax import ExtraConfig, File, Photo, WebClient
 from pymax.exceptions import ApiError
 from pymax.protocol.enums import Opcode
@@ -217,7 +216,11 @@ class PymaxAdapter(MaxClientPort):
 
     def _invalidate_cached_chat(self, chat_id: int) -> None:
         """Force pymax's targeted lookup to fetch the current server state."""
-        cached_chats = getattr(self._client, "chats", None)
+        try:
+            cached_chats = self._client.chats
+        except RuntimeError:
+            # PyMax 2.4 exposes ``chats`` as a property that raises before start().
+            return
         if not isinstance(cached_chats, list):
             return
         typed_chats = cast(list[Any], cached_chats)
@@ -497,23 +500,6 @@ class PymaxAdapter(MaxClientPort):
                 video_id,
             )
             return self._extract_url(getattr(video_request, "url", None))
-        except ValidationError as exc:
-            fallback_url = self._extract_video_url_from_validation_error(exc)
-            if fallback_url:
-                logger.warning(
-                    "max video URL compatibility fallback chat_id=%s message_id=%s video_id=%s",
-                    chat_id,
-                    message_id,
-                    video_id,
-                )
-                return fallback_url
-            logger.warning(
-                "max video URL validation failed chat_id=%s message_id=%s video_id=%s error_types=%s",
-                chat_id,
-                message_id,
-                video_id,
-                [error.get("type") for error in exc.errors()],
-            )
         except Exception as exc:
             logger.warning(
                 "max video URL lookup failed chat_id=%s message_id=%s video_id=%s error_type=%s",
@@ -523,32 +509,6 @@ class PymaxAdapter(MaxClientPort):
                 type(exc).__name__,
             )
         return None
-
-    def _extract_video_url_from_validation_error(self, exc: ValidationError) -> str | None:
-        candidates: list[tuple[int, str]] = []
-        legacy_url: str | None = None
-        for error in exc.errors():
-            input_value = error.get("input")
-            if not isinstance(input_value, dict):
-                continue
-            payload = cast(dict[str, Any], input_value)
-            for key, value in payload.items():
-                if not isinstance(value, str):
-                    continue
-                normalized_key = key.upper()
-                if normalized_key.startswith("MP4_"):
-                    try:
-                        quality = int(normalized_key.removeprefix("MP4_"))
-                    except ValueError:
-                        continue
-                    if quality > 0:
-                        candidates.append((quality, value))
-                elif key in {"dynamicUrl", "dynamic_url"}:
-                    legacy_url = value
-
-        if candidates:
-            return max(candidates, key=lambda item: item[0])[1]
-        return legacy_url
 
     def _field(self, value: Any, name: str, *aliases: str) -> Any:
         if isinstance(value, dict):
@@ -626,7 +586,11 @@ class PymaxAdapter(MaxClientPort):
         return str(value).strip().upper()
 
     def _current_user_id(self) -> int | None:
-        profile = getattr(self._client, "me", None)
+        try:
+            profile = self._client.me
+        except RuntimeError:
+            # PyMax 2.4 exposes ``me`` as a property that raises before start().
+            return None
         contact = getattr(profile, "contact", None)
         user_id = getattr(contact, "id", None)
         return user_id if isinstance(user_id, int) else None

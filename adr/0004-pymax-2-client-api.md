@@ -34,4 +34,4 @@ MaxLinkBot остается на библиотеке `maxapi-python`, но фи
 
 ## Статус
 
-Accepted
+Accepted. Часть про фиксацию версии `2.3.1` заменена [ADR-0005](/home/itolstov/Projects/other/MaxLinkBot/adr/0005-pymax-2-4-1-upgrade.md) (переход на `2.4.1`); правила интеграции остаются в силе.

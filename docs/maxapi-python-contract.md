@@ -6,7 +6,7 @@
 
 `maxapi-python` — Python package for MAX WebSocket client integration.
 
-Pinned version: `2.3.1`
+Pinned version: `2.4.1` (upgraded from `2.3.1`, see ADR-0005)
 
 Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
 
@@ -21,7 +21,18 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   translated to `AuthError` and the client is closed.
 - Session data is persisted on disk in per-user directories under `MAX_WORK_DIR/{telegram_user_id}/`.
 - The persisted restore artifact currently expected by the repository is `MAX_WORK_DIR/{telegram_user_id}/session.db`.
-- PyMax 2.3 stores token, device ID and sync markers in table `sessions`.
+- PyMax stores token, device ID and sync markers in table `sessions`. The 2.4
+  session store extends an existing database schema with missing columns
+  (`_ensure_column`) and adds a nullable `user_agent` column on first open; an
+  existing 2.3 session database keeps its token, `device_id` and
+  `mt_instance_id` and is upgraded in place.
+- Device identity for MAX comes from `session.device_id`, not from the user
+  agent: on restore PyMax reuses the stored `device_id` and only fills in a
+  generated user agent when the session has none.
+- In PyMax 2.4 `client.me` and `client.chats` are read-only properties backed by
+  the runtime app: accessing them before `start()` raises
+  `RuntimeError("Client runtime is not initialized")`. The adapter accesses them
+  only for started clients and additionally tolerates that error.
 - On first use, a PyMax 1.2.5 row from legacy table `auth` is copied into `sessions`.
   The `auth` table is preserved for rollback.
 - A merely existing `session.db` is not enough for restore: background runtime requires
@@ -70,10 +81,11 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   The adapter resolves a temporary download URL through `WebClient.get_file_by_id()`.
 - Incoming `VideoAttachment` contains `video_id` but no direct URL. The adapter resolves
   it through `WebClient.get_video_by_id()` using the top-level message ID.
-- MAX may return video playback URLs as dynamic `MP4_<quality>` keys without the
-  `cache` field required by the released PyMax 2.3.1 `VideoRequest`. Until the
-  upstream fix is released, the adapter recovers the highest available MP4 URL
-  from Pydantic's validation input; signed URLs are never written to logs.
+- MAX may return video playback URLs as dynamic `MP4_<quality>` keys without a
+  `cache` field. PyMax 2.4.1 fixed this upstream: `VideoRequest.cache` has a
+  default and a validator picks the highest available `MP4_<quality>` URL, so the
+  adapter no longer needs the MLB-027 compatibility fallback that recovered the
+  URL from a Pydantic `ValidationError`. Signed URLs are never written to logs.
 - In PyMax 2.3 history, forwarded `link.message` may remain a plain camelCase dict
   instead of a typed model. The adapter supports both dict-shaped and object-shaped
   linked content and preserves the top-level message ID for video URL resolution.
@@ -86,7 +98,11 @@ Python runtime API: `from pymax import ExtraConfig, File, Photo, WebClient`
   Telegram API errors are not rewritten as media download failures.
 - Unknown attachment types are represented by PyMax `UnknownAttachment` instead of
   failing the complete message parse.
-- PyMax 2.3.1 decodes LZ4 payload coefficients and Zstandard payloads.
+- PyMax decodes LZ4 payload coefficients and Zstandard payloads.
+- PyMax 2.4.1 adds `PollAttachment`, `Voice`/`VideoNote` sending and keeps unknown
+  attachments as `UnknownAttachment`, so unsupported MAX content still cannot
+  break message parsing. The adapter does not render polls, voice messages or
+  video notes yet; they fall back to the generic text representation.
 - Forwarded / linked MAX messages may expose the actual supported payload under
   `message.link.message` while the top-level message stays effectively empty
   (`type=USER`, no text/attaches usable for rendering). Adapter code preserves
